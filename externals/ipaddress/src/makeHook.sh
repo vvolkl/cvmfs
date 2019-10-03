@@ -2,7 +2,7 @@
 
 set -e
 rm -rf build
-python setup.py build
+python2 setup.py build
 if [ -d build/lib ]; then
   cd build/lib
 else
