@@ -22,17 +22,11 @@ cvmfs_run_test() {
 
   ###########
   # check the open file descriptors of the cvmfs2 process 
-
-  alice_cvmfs2_pids=$(pgrep -f "cvmfs2 .* alice.cern.ch" -P 1)
-  # this may find several pids, just loop over them to find the one with an fd for our test file
-  for p in $alice_cvmfs2_pids; do
-    num_open_fds=$(ls -l /proc/$p/fd/ | grep /var/lib/cvmfs/shared/${testfile_hash:0:2}/${testfile_hash:2} | wc -l)
-    if [ "$num_open_fds" -gt "0" ]; then # select the right pid
-      if [ "$num_open_fds" -gt "1" ]; then
-        echo "The cvmfs process has several open file descriptors for the same open test file" && return 20
-      fi  
-    fi  
-  done;
+  alice_pid=$(cvmfs_talk -i alice.cern.ch pid)
+  num_open_fds=$(ls -l /proc/$alice_pid/fd/ | grep /var/lib/cvmfs/shared/${testfile_hash:0:2}/${testfile_hash:2} | wc -l)
+  if [ "$num_open_fds" -gt "1" ]; then
+    echo "The cvmfs process has several open file descriptors for the same open test file" && return 20
+  fi
 
   return 0
 }
