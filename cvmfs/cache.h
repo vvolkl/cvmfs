@@ -43,7 +43,7 @@ enum CacheModes {
  *
  * Writing into the cache is streamed and transactional: a file descriptor must
  * be acquired from StartTxn and the object is only visible in the cache after
- * CommitTxn.  The state of the transaction is carried in an opque transaction
+ * CommitTxn. The state of the transaction is carried in an opaque transaction
  * object, which needs to be provided by the caller.  The size of the object is
  * returned by SizeOfTxn.  This way, users of derived classes can take care of
  * the storage allocation (e.g. on the stack), while the derived class
