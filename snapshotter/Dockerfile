@@ -77,5 +77,5 @@ COPY --from=containerd-dev /out/usr/local/bin/containerd /out/usr/local/bin/cont
 COPY --from=snapshotter-dev /out/* /usr/local/bin/
 COPY ./script/config/ /
 RUN apt-get update -y && apt-get install --no-install-recommends -y fuse && \
-    systemctl enable cvmfs-snapshotter
-ENTRYPOINT [ "/usr/local/bin/entrypoint", "/sbin/init" ]
+    systemctl enable cvmfs-snapshotter && chmod +x /usr/local/bin/kind-entrypoint.sh
+ENTRYPOINT [ "/usr/local/bin/kind-entrypoint.sh", "/usr/local/bin/entrypoint", "/sbin/init" ]
