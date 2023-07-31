@@ -40,7 +40,7 @@ FROM golang-base AS snapshotter-dev
 ARG SNAPSHOTTER_BUILD_FLAGS
 ARG CTR_REMOTE_BUILD_FLAGS
 COPY . $GOPATH/src/github.com/cvmfs/containerd-remote-snapshotter
-RUN cd $GOPATH/src/github.com/cvmfs/containerd-remote-snapshotter && \
+RUN cd $GOPATH/src/github.com/cvmfs/containerd-remote-snapshotter && go mod tidy &&\
     PREFIX=/out/ GO_BUILD_FLAGS=${SNAPSHOTTER_BUILD_FLAGS} make
 
 # Base image which contains containerd with default snapshotter
