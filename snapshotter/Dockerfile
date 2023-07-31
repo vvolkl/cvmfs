@@ -72,8 +72,8 @@ ENV CONTAINERD_SNAPSHOTTER=cvmfs
 ENTRYPOINT [ "/entrypoint.sh" ]
 
 # Image which can be used as a node image for KinD
-FROM kindest/node:v1.18.0
-COPY --from=containerd-dev /out/bin/containerd /out/bin/containerd-shim-runc-v2 /usr/local/bin/
+FROM kindest/node:v1.27.1
+COPY --from=containerd-dev /out/usr/local/bin/containerd /out/usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/
 COPY --from=snapshotter-dev /out/* /usr/local/bin/
 COPY ./script/config/ /
 RUN apt-get update -y && apt-get install --no-install-recommends -y fuse && \
