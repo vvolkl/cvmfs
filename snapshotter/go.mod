@@ -1,4 +1,4 @@
-module github.com/cvmfs/cvmfs/snapshotter
+module github.com/marcoverl/cvmfs/snapshotter
 
 go 1.18
 
