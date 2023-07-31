@@ -1,1 +1,5 @@
-# empty for now
+version = 2
+
+# Source of image layers
+repository = "unpacked.cern.ch"
+#absolute-mountpoint = "/cvmfs/unpacked.cern.ch"
