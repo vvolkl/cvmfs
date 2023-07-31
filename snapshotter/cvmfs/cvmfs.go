@@ -52,7 +52,7 @@ func NewFilesystem(ctx context.Context, root string, config *Config) (snapshot.F
 	if _, err := os.Stat(absolutePath); err != nil {
 		log.G(ctx).WithField("absolutePath", absolutePath).Warning("Impossible to stat the absolute path, is the filesystem mounted properly? Error: ", err)
 	}
-	return &Filesystem{fsAbsoluteMountpoint: absolutePath, mountedLayers: mountedLayersMap}, nil
+	return &Filesystem{fsAbsoluteMountpoint: absolutePath, mountedLayers: mountedLayersMap, mountedPaths: mountedPathsMap}, nil
 }
 
 func (fs *Filesystem) Mount(ctx context.Context, mountpoint string, labels map[string]string) error {
