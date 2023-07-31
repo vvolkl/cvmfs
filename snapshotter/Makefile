@@ -1,12 +1,12 @@
 PREFIX ?= out/
 
-all: cvmfs_snapshotter
+all: cvmfs-snapshotter
 
-cvmfs_snapshotter: 
+cvmfs-snapshotter: 
 	go build -o $(PREFIX)$@
 
 
-release: cvmfs_snapshotter
+release: cvmfs-snapshotter
 	mkdir -p release/usr/local/bin
 	cp -r out/* release/usr/local/bin
 	cp -r script/config/* release/
