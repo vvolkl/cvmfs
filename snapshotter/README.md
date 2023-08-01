@@ -21,7 +21,7 @@ Feel free to fill issues and pull requests.
 This plugin is tested using `kind`.
 
 ```
-$ docker build -t cvmfs-kind-node https://github.com/marcoverl/cvmfs.git\#:snapshotter
+$ docker build -t cvmfs-kind-node https://github.com/cvmfs/cvmfs.git\#:snapshotter
 $ cat kind-mount-cvmfs.yaml
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
