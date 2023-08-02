@@ -12,7 +12,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-ARG CONTAINERD_VERSION=v1.7.0
+ARG CONTAINERD_VERSION=v1.7.3
 
 FROM golang:1.20.4-bullseye AS golang-base
 
@@ -30,7 +30,7 @@ FROM golang-base AS snapshotter-dev
 ARG SNAPSHOTTER_BUILD_FLAGS
 ARG CTR_REMOTE_BUILD_FLAGS
 COPY . $GOPATH/src/github.com/cvmfs/snapshotter
-RUN cd $GOPATH/src/github.com/cvmfs/snapshotter && go mod tidy && \
+RUN cd $GOPATH/src/github.com/cvmfs/snapshotter && \
     PREFIX=/out/ GO_BUILD_FLAGS=${SNAPSHOTTER_BUILD_FLAGS} make
 
 # Image which can be used as a node image for KinD
