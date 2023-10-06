@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 @app.route("/", methods=["POST"])
 def catch_all():
-    notifications_file =  os.environ['NOTIFILE']
+    notifications_file =  os.environ.get('NOTIFILE', 'notifications.txt')
     print(request.json)
     try:
         for (action, image) in handle_harbor(request.json):
@@ -32,7 +32,7 @@ def catch_all():
     return "ko", 500
 
 def publish_message(notifications_file, action, image):
-    rotation = int(os.environ['ROTATION'])
+    rotation = int(os.environ.get('ROTATION', '100'))
     with open(notifications_file, 'a+') as f:
         if os.stat(notifications_file).st_size == 0:
             current_id = 0
