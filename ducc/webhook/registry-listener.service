@@ -1,0 +1,13 @@
+[Unit]
+Description=Registry File Listener Service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/go run registry-listener.go -notifications_file "notifications.txt" -repository_name "unpacked.infn.it"
+WorkingDirectory=/opt/registry-webhook
+User=cvmfs
+StandardOutput=journal
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
