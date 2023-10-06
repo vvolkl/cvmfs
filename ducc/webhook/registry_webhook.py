@@ -1,16 +1,14 @@
 from flask import Flask
 from flask import request
 
-import argparse
-import pprint
 import os
 
-application = Flask(__name__)
+app = Flask(__name__)
 
-@application.route("/", methods=["POST"])
+@app.route("/", methods=["POST"])
 def catch_all():
+    notifications_file =  os.environ['NOTIFILE']
     print(request.json)
-    notifications_file = "notifications.txt"
     try:
         for (action, image) in handle_harbor(request.json):
 
@@ -31,11 +29,10 @@ def catch_all():
         print("Fail to handle the dockerhub hook")
         print(e)
 
-#    pprint.pprint(request.json)
     return "ko", 500
 
 def publish_message(notifications_file, action, image):
-    rotation = 100
+    rotation = int(os.environ['ROTATION'])
     with open(notifications_file, 'a+') as f:
         if os.stat(notifications_file).st_size == 0:
             current_id = 0
@@ -107,4 +104,4 @@ def handle_harbor(rjson):
             print("The replicated artifact from {} already exists in {}".format(str(source), str(destination)))
 
 if __name__ == '__main__':
-     application.run()
+    app.run()
