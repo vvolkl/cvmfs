@@ -1,4 +1,4 @@
 import os
-os.environ['NOTIFILE'] = os.environ.get('NOTIFILE','notifications.txt')
-os.environ['ROTATION'] = os.environ.get('ROTATION','100')
+from dotenv import load_dotenv
+load_dotenv() # take environment variables from .env.
 from registry_webhook import app as application
