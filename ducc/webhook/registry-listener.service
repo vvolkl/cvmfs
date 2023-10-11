@@ -1,12 +1,13 @@
 [Unit]
 Description=Registry Webhook File Listener Service
 Requires=httpd.service
+After=httpd.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/go run registry-listener.go -notifications_file "notifications.txt" -repository_name "unpacked.infn.it"
-WorkingDirectory=/opt/cvmfs/ducc/webhook
-User=apache
+EnvironmentFile=/opt/cvmfs/ducc/webhook/.env
+ExecStart=/usr/bin/go run ${PROJECT_PATH}/registry-listener.go -log_file ${LISTENER_LOGFILE} -notifications_file ${NOTIFICATIONS_FILE} -repository_name ${REPOSITORY_NAME}
+User=root
 StandardOutput=journal
 Restart=always
 
