@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 @app.route("/", methods=["POST"])
 def catch_all():
-    notifications_file =  os.environ.get('NOTIFILE', 'notifications.txt')
+    notifications_file = os.environ.get('NOTIFICATIONS_FILE', 'notifications.txt')
     print(request.json)
     try:
         for (action, image) in handle_harbor(request.json):
@@ -45,7 +45,7 @@ def publish_message(notifications_file, action, image):
             last_line_id = int(last_line.split('|')[0])
             current_id = last_line_id + 1
             if (last_line_id % rotation == 0 and last_line_id != 0):
-                new_notifications_file = str(first_line_id)+'-'+str(last_line_id)+notifications_file.split('/')[-1]
+                new_notifications_file = os.path.dirname(notifications_file)+'/'+str(first_line_id)+'-'+str(last_line_id)+notifications_file.split('/')[-1]
                 os.rename(notifications_file, new_notifications_file)
                 open(notifications_file, 'a').close()
                 with open(new_notifications_file, 'a+') as f:
