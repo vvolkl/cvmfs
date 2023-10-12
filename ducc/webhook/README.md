@@ -8,7 +8,7 @@ cd cvmfs/ducc/webhook/
 #
 # set variables in .env file, if you change the PROJECT_PATH var, change registry-listener.service accordingly
 #
-mod_wsgi-express-3 setup-server webhook.wsgi --port 8080 --user centos --server-root=mod_wsgi-express-8080/ --log-directory logs/ --access-log
+mod_wsgi-express-3 setup-server registry_webhook.wsgi --port 8080 --user centos --server-root=mod_wsgi-express-8080/ --log-directory logs/ --access-log
 sudo cp registry-listener.service /etc/systemd/system/; sudo systemctl daemon-reload
 mod_wsgi-express-8080/apachectl start
 sudo systemctl start registry-listener
