@@ -1,7 +1,7 @@
 [Unit]
 Description=Registry Webhook File Listener Service
 Requires=httpd.service
-After=httpd.service
+After=network.target httpd.service
 
 [Service]
 Type=simple
