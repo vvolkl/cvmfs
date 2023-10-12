@@ -2,7 +2,8 @@
 
 As root:
 ```
-yum install  -y python36-mod_wsgi python-dotenv
+yum install  -y python36-mod_wsgi
+pip3 install python-dotenv
 cd /opt/
 git clone --depth 1 https://github.com/marcoverl/cvmfs.git
 cd cvmfs/ducc/webhook
@@ -16,7 +17,7 @@ chmod g+w /var/log/webhook
 semanage fcontext -a -t httpd_sys_rw_content_t  "/var/log/webhook"
 restorecon -Rv /var/log/webhook
 #
-mod_wsgi-express-3 setup-server webhook.wsgi --port 8080 --user apache --group root --server-root=/etc/mod_wsgi-express-8080 --log-directory /etc/httpd/logs/webhook --access-log
+mod_wsgi-express-3 setup-server registry_webhook.wsgi --port 8080 --user apache --group root --server-root=/etc/mod_wsgi-express-8080 --log-directory /etc/httpd/logs/webhook --access-log
 cp registry-listener.service /etc/systemd/system/; systemctl daemon-reload
 /etc/mod_wsgi-express-8080/apachectl start
 systemctl start registry-listener
@@ -27,7 +28,8 @@ tail -f /etc/httpd/logs/webhook/error_log
 ```
 Another option is to run the wsgi app as a process of an already running httpd service:
 ```
-yum install  -y python36-mod_wsgi python-dotenv
+yum install  -y python36-mod_wsgi
+pip3 install python-dotenv
 cd /opt/
 git clone --depth 1 https://github.com/marcoverl/cvmfs.git
 cd cvmfs/ducc/webhook
