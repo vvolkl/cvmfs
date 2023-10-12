@@ -1,7 +1,8 @@
 # Webhook notification service interacting with cvmfs_ducc
 Install and run as centos (from /home/centos):
 ```
-sudo yum install  -y python36-mod_wsgi python-dotenv
+sudo yum install -y python36-mod_wsgi
+sudo pip3 install python-dotenv
 git clone --branch my-devel --depth 1 https://github.com/marcoverl/cvmfs.git
 cd cvmfs/ducc/webhook/
 #
