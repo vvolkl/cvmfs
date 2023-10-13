@@ -126,7 +126,7 @@ func ExecDucc(msg string, logfile_name string, repository_name string) {
                 status, exists := data["status"]
                 if exists && status == "error" {
                         // Perform some action when "status" is "error"
-                        fmt.Println("[DUCC conversion n.%d failed for layer %s]\n", nOfE, data["layer"])
+                        fmt.Printf("[DUCC conversion n.%d failed for layer %s]\n", nOfE, data["layer"])
                         repeat = true
                         break;
                 }
