@@ -10,6 +10,7 @@ import (
   "flag"
   "strings"
   "os/exec"
+  "encoding/json"
 )
 
 func ReadChanges(file *os.File) chan string {
@@ -71,17 +72,73 @@ func ExecDucc(msg string, logfile_name string, repository_name string) {
     image := msg_split[len(msg_split)-1]
     image = strings.ReplaceAll(image, "https://", "")
     action := msg_split[len(msg_split)-2]
+    ima_split := strings.Split(image, "/")
+    dkrepo := ima_split[len(ima_split)-1]
 
     if action == "push" {
-        numberOfExecutions := 3
-        for i := 0; i < numberOfExecutions; i++ {
-                fmt.Printf("DUCC ingestion n.%d for %s started...\n", i+1, image)
-                _, err := exec.Command("sudo", "cvmfs_ducc", "convert-single-image", "-n", logfile_name, "-p", image, repository_name, "--skip-thin-image", "--skip-podman").Output()
-                if err != nil {
-                        log.Fatal(err)
+
+        nOfE := 0
+        repeat := true
+        lf_name := ""
+
+        for repeat {
+          nOfE++
+          repeat = false
+          currentTime := time.Now()
+          timestamp := currentTime.Format("060102-150405")
+          lf_name = logfile_name + "_" + dkrepo + "_" + timestamp
+          fmt.Printf("[DUCC conversion n.%d for %s started...]\n", nOfE, image)
+
+          _, err := exec.Command("sudo", "cvmfs_ducc", "convert-single-image", "-n", lf_name, "-p", image, repository_name, "--skip-thin-image", "--skip-podman").Output()
+          if err != nil {
+            log.Fatal(err)
+          }
+
+          // Open the JSON file for reading
+          _, chmodErr := exec.Command("sudo", "chmod", "0755", lf_name).Output()
+          if chmodErr != nil {
+                fmt.Println("Error executing chmod:", chmodErr)
+                return
+          }
+
+          file, fileErr := os.Open(lf_name)
+          if err != nil {
+                fmt.Println("Error opening file:", fileErr)
+                return
+          }
+          defer file.Close()
+
+          // Create a scanner to read the file line by line
+          scanner := bufio.NewScanner(file)
+
+          // Loop through each line in the file
+          for scanner.Scan() {
+
+                line := scanner.Text()
+                // Parse the line as a JSON object
+                var data map[string]interface{}
+                if err := json.Unmarshal([]byte(line), &data); err != nil {
+                        fmt.Printf("Error parsing JSON: %v\n", err)
+                        continue
                 }
-                fmt.Printf("[done ingestion n.%d]\n",i+1)
+
+                // Check if "status" is "error"
+                status, exists := data["status"]
+                if exists && status == "error" {
+                        // Perform some action when "status" is "error"
+                        fmt.Println("[DUCC conversion n.%d failed for layer %s]\n", nOfE, data["layer"])
+                        repeat = true
+                        break;
+                }
+          }
+
+          if err := scanner.Err(); err != nil {
+                fmt.Println("Error reading file:", err)
+          }
+
         }
+
+        fmt.Printf("[DUCC conversion n.%d completed 'ok']\n", nOfE)
     }
 }
 
