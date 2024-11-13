@@ -1,5 +1,6 @@
 [![Build Status](https://travis-ci.org/cvmfs/cvmfs.svg?branch=devel)](https://travis-ci.org/cvmfs/cvmfs) [![Documentation Status](https://readthedocs.org/projects/cvmfs/badge/?version=latest)](http://cvmfs.readthedocs.org/en/latest/?badge=master) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.1010441.svg)](https://doi.org/10.5281/zenodo.1010441)
 
+
 # CernVM-File System (CernVM-FS)
 
 The CernVM-File System provides a scalable, reliable and low-maintenance
