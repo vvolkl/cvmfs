@@ -3,8 +3,8 @@ on:
   pull_request:
     paths: ['**.c', '**.cpp', '**.h', '**.hpp', '**.cxx', '**.hxx', '**.cc', '**.hh', '**CMakeLists.txt', '**.cmake']
   push:
-    branches: [devel, cvmfs*]
-    paths: ['**.c', '**.cpp', '**.h', '**.hpp', '**.cxx', '**.hxx', '**.cc', '**.hh', '**CMakeLists.txt', '**.cmake']
+    branches: [devel, cvmfs*, gh-actions-linter]
+    #paths: ['**.c', '**.cpp', '**.h', '**.hpp', '**.cxx', '**.hxx', '**.cc', '**.hh', '**CMakeLists.txt', '**.cmake']
 
 jobs:
   cpp-linter:
@@ -66,7 +66,7 @@ jobs:
           style: ''  # disable clang-format checks. 
           database: "build"
           tidy-checks: '' # Use .clang-tidy config file. 
-          verbose: debug
+          verbosity: debug
       - name: Fail fast?!
         if: steps.linter.outputs.clang-tidy-checks-failed > 0
         run: exit 1
