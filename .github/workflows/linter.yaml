@@ -53,11 +53,7 @@ jobs:
           key: ${{ runner.os }}-${{ steps.get-externals-hash.outputs.hash }}
       - name: Install LLVM
         run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo deb http://apt.llvm.org/noble/ llvm-toolchain-noble main | sudo tee /etc/apt/sources.list.d/llvm.list
-          sudo apt-get update
-          sudo apt-get upgrade
-          sudo apt-get -y install clang-tidy
+          bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
         shell: bash
       - uses: cpp-linter/cpp-linter-action@v2
         id: linter
