@@ -51,17 +51,25 @@ jobs:
         with:
           path: externals_install
           key: ${{ runner.os }}-${{ steps.get-externals-hash.outputs.hash }}
+      - name: Install LLVM
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo deb http://apt.llvm.org/noble/ llvm-toolchain-noble main | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt update
+          sudo apt -y install clang-tidy
+        shell: bash
       - uses: cpp-linter/cpp-linter-action@v2
         id: linter
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          version: "19"
+          version: ""
           step-summary: true
           file-annotations: true
           style: ''  # disable clang-format checks. 
           database: "build"
           tidy-checks: '' # Use .clang-tidy config file. 
+          verbose: debug
       - name: Fail fast?!
         if: steps.linter.outputs.clang-tidy-checks-failed > 0
         run: exit 1
