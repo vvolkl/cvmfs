@@ -60,7 +60,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          version: ""
+          version: ''
           step-summary: true
           file-annotations: true
           style: ''  # disable clang-format checks. 
