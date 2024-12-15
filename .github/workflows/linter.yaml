@@ -53,7 +53,7 @@ jobs:
           key: ${{ runner.os }}-${{ steps.get-externals-hash.outputs.hash }}
       - name: Install LLVM
         run: |
-          bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
+          sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
         shell: bash
       - uses: cpp-linter/cpp-linter-action@v2
         id: linter
