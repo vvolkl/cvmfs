@@ -149,7 +149,8 @@ struct DirectoryListing {
   DirectoryListing() : buffer(NULL), size(0), capacity(0) { }
 };
 
-const loader::LoaderExports *loader_exports_ = NULL;
+//TODO: lintertest, readd const
+loader::LoaderExports *loader_exports_ = NULL;
 OptionsManager *options_mgr_ = NULL;
 pid_t pid_ = 0;  /**< will be set after daemon() */
 quota::ListenerHandle *watchdog_listener_ = NULL;
@@ -173,7 +174,7 @@ bool check_fd_overflow_ = true;
 /**
  * Number of reserved file descriptors for internal use
  */
-const int kNumReservedFd = 512;
+int kNumReservedFd = 512;
 /**
  * Warn if the process has a lower limit for the number of open file descriptors
  */
@@ -209,7 +210,7 @@ struct FuseState {
  * files are opened.  Otherwise return true (success).
  */
 static inline bool IncAndCheckNoOpenFiles() {
-  const int64_t no_open_files = perf::Xadd(file_system_->no_open_files(), 1);
+  int64_t no_open_files = perf::Xadd(file_system_->no_open_files(), 1);
   if (!check_fd_overflow_)
     return true;
   return no_open_files < (static_cast<int>(max_open_files_) - kNumReservedFd);
@@ -299,11 +300,11 @@ static bool FixupOpenInode(const PathString &path,
 
   CVMFS_TEST_INJECT_BARRIER("_CVMFS_TEST_BARRIER_INODE_REPLACE");
 
-  const bool is_stale = mount_point_->page_cache_tracker()->IsStale(*dirent);
+  bool is_stale = mount_point_->page_cache_tracker()->IsStale(*dirent);
 
   if (is_stale) {
     // Overwrite dirent with inode from current generation
-    const bool found = mount_point_->catalog_mgr()->LookupPath(
+    bool found = mount_point_->catalog_mgr()->LookupPath(
         path, catalog::kLookupDefault, dirent);
     assert(found);
   }
