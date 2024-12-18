@@ -55,17 +55,15 @@ jobs:
         run: |
           sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
         shell: bash
-      - uses: cpp-linter/cpp-linter-action@v2
-        id: linter
+      - name: Run clang-tidy-diff
+        if: github.event_name = 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          step-summary: true
-          file-annotations: true
-          style: ''  # disable clang-format checks. 
-          database: "build"
-          tidy-checks: '' # Use .clang-tidy config file. 
-          verbosity: debug
-      - name: Fail fast?!
-        if: steps.linter.outputs.clang-tidy-checks-failed > 0
-        run: exit 1
+        run: |
+          git diff -U0  ${{ github.base_ref  }} | /usr/share/clang/clang-tidy-diff.py -use-color -path ./build -p1  
+        shell: bash
+      - name: Run clang-tidy-diff
+        if: github.event_name = 'push'
+        run: |
+          git diff -U0 HEAD ^HEAD   | /usr/share/clang/clang-tidy-diff.py -use-color -path ./build -p1  
+        shell: bash
