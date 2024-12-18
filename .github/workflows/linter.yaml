@@ -57,6 +57,8 @@ jobs:
           sudo chmod +x llvm.sh
           sudo ./llvm.sh all
           sudo apt-get -y install clang-tidy-18 clang-tools-18
+          cd /
+          sudo find . -name clang-tidy-diff.py 
         shell: bash
       - name: Run clang-tidy-diff
         if: github.event_name == 'pull_request'
