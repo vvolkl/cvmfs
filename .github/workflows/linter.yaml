@@ -54,7 +54,7 @@ jobs:
       - name: Install LLVM
         run: |
           sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
-          sudo apt-get -y install clang-tools-extra-18
+          sudo apt-get -y install clang-extra
         shell: bash
       - name: Run clang-tidy-diff
         if: github.event_name == 'pull_request'
