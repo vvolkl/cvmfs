@@ -68,5 +68,6 @@ jobs:
       - name: Run clang-tidy-diff
         if: github.event_name == 'push'
         run: |
+          git diff -U0 HEAD ^HEAD
           git diff -U0 HEAD ^HEAD   | /usr/lib/llvm-18/share/clang/clang-tidy-diff.py -use-color -path ./build -p1  
         shell: bash
