@@ -54,9 +54,8 @@ jobs:
       - name: Install LLVM
         run: |
           sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
-          sudo apt-get -y install clang-tools
-          cd /
-          find . -type f -name clang-tidy-diff.py
+          sudo apt-get -y install clang-tools-18
+          ls /usr/lib/llvm-18/share/clang/
         shell: bash
       - name: Run clang-tidy-diff
         if: github.event_name == 'pull_request'
