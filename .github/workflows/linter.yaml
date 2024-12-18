@@ -54,18 +54,17 @@ jobs:
       - name: Install LLVM
         run: |
           sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
-          sudo apt-get -y install clang-tools-18
-          ls /usr/lib/llvm-18/share/clang/
+          sudo apt-get -y install clang-tools-extra-18
         shell: bash
       - name: Run clang-tidy-diff
         if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git diff -U0  ${{ github.base_ref  }} | clang-tidy-diff.py -use-color -path ./build -p1  
+          git diff -U0  ${{ github.base_ref  }} | /usr/lib/llvm-18/share/clang/clang-tidy-diff.py -use-color -path ./build -p1  
         shell: bash
       - name: Run clang-tidy-diff
         if: github.event_name == 'push'
         run: |
-          git diff -U0 HEAD ^HEAD   | clang-tidy-diff.py -use-color -path ./build -p1  
+          git diff -U0 HEAD ^HEAD   | /usr/lib/llvm-18/share/clang/clang-tidy-diff.py -use-color -path ./build -p1  
         shell: bash
