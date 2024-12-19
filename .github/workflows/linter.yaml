@@ -10,10 +10,10 @@ jobs:
   cpp-linter:
     runs-on: ubuntu-latest
     steps:
-    - name: Set Clang version
-       shell: bash
-       run: |
-         echo "CLANG_VERSION=18" >> $GITHUB_ENV
+      - name: Set Clang version
+        shell: bash
+        run: |
+          echo "CLANG_VERSION=18" >> $GITHUB_ENV
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
