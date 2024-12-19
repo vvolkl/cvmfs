@@ -80,5 +80,5 @@ jobs:
       - name: Generate Summary
         run: |
           echo '### Clang-Tidy Summary ' >> $GITHUB_STEP_SUMMARY
-          cat clang-tidy-out >> $GITHUB_STEP_SUMMARY
+          cat clang-tidy.out >> $GITHUB_STEP_SUMMARY
         shell: bash
