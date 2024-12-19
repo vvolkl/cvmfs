@@ -72,5 +72,6 @@ jobs:
         run: |
           git log
           git diff -U0 HEAD HEAD~
-          git diff -U0 HEAD HEAD~   | /usr/lib/llvm-18/share/clang/clang-tidy-diff.py -use-color -path ./build -p1  
+          pwd
+          git diff -U0 HEAD HEAD~   | /usr/lib/llvm-18/share/clang/clang-tidy-diff.py -use-color -path ./build #-p1  
         shell: bash
