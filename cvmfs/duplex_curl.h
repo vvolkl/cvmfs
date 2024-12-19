@@ -6,9 +6,9 @@
 #define CVMFS_DUPLEX_CURL_H_
 
 #ifdef _BUILT_IN_LIBCURL
-  #include "curl/curl.h" // abc
+  #include "curl/curl.h" // abcd
 #else
-  #include <curl/curl.h> // abc
+  #include <curl/curl.h> // abcd
 #endif
 
 #endif  // CVMFS_DUPLEX_CURL_H_
