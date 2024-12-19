@@ -10,6 +10,10 @@ jobs:
   cpp-linter:
     runs-on: ubuntu-latest
     steps:
+    - name: Set Clang version
+       shell: bash
+       run: |
+         echo "CLANG_VERSION=18" >> $GITHUB_ENV
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
@@ -65,17 +69,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git diff -U0  ${{ github.base_ref  }} | /usr/lib/llvm-18/share/clang/clang-tidy-diff.py -use-color -path ./build -p1  
+          git diff -U0  ${{ github.base_ref  }} | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  
         shell: bash
       - name: Run clang-tidy-diff
         if: github.event_name == 'push'
         run: |
-          git log
-          git diff -U0 HEAD HEAD~
-          pwd
-          cat /usr/lib/llvm-18/share/clang/clang-tidy-diff.py
-          alias clang-tidy=clang-tidy-18
-          clang-tidy-18 --version
-          git diff -U0 HEAD HEAD~   | /usr/lib/llvm-18/share/clang/clang-tidy-diff.py -clang-tidy-binary -use-color -path ./build -p1  
-          clang-tidy-18 -p ./build cvmfs/duplex_curl.h 
+          git diff -U0 HEAD HEAD~   | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  
         shell: bash
