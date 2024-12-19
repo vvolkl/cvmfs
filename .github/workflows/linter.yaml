@@ -62,17 +62,21 @@ jobs:
           wget  https://apt.llvm.org/llvm.sh
           sudo chmod +x llvm.sh
           sudo ./llvm.sh all
-          sudo apt-get -y install clang-tidy-18 clang-tools-18
         shell: bash
       - name: Run clang-tidy-diff
         if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git diff -U0  ${{ github.base_ref  }} | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  
+          git diff -U0  ${{ github.base_ref  }} | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  | tee clang-tidy.out
         shell: bash
       - name: Run clang-tidy-diff
         if: github.event_name == 'push'
         run: |
-          git diff -U0 HEAD HEAD~   | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  
+          git diff -U0 HEAD HEAD~   | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1 | tee clang-tidy.out 
+        shell: bash
+      - name: Generate Summary
+        run: |
+          echo '### Clang-Tidy Summary ' >> $GITHUB_STEP_SUMMARY
+          cat clang-tidy-out >> $GITHUB_STEP_SUMMARY
         shell: bash
