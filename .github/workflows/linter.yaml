@@ -68,7 +68,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git diff -U0  ${{ github.base_ref  }} | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  | tee clang-tidy.out
+          git diff -U0  HEAD HEAD~ | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  | tee clang-tidy.out
         shell: bash
       - name: Run clang-tidy-diff - Push
         if: github.event_name == 'push'
