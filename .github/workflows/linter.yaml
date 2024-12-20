@@ -87,7 +87,7 @@ jobs:
       - name: Generate Annotations
         if: ${{ success() || failure() }}
         run: |
-          echo "::error file={cvmfs/duplex_curl.h},line={11},title={error: included header curl.h is not used directly [misc-include-cleaner,-warnings-as-errors]}::{message text line 1 %0A line2 %0A line3}
+          echo "::error file={cvmfs/duplex_curl.h},line={11},title={error: included header curl.h is not used directly [misc-include-cleaner,-warnings-as-errors]}::{message text line 1 %0A line2 %0A line3}"
         shell: bash
 
 
