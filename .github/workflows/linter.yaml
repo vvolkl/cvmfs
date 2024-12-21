@@ -63,17 +63,14 @@ jobs:
           sudo chmod +x llvm.sh
           sudo ./llvm.sh all
         shell: bash
-      - name: Run clang-tidy-diff - Pull Request
-        if: github.event_name == 'pull_request'
+      - name: Run clang-tidy-diff
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          echo "::add-matcher::../script/clang_matcher.json" 
+          git log
           git diff -U0  HEAD HEAD~ | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  | tee clang-tidy.out
-        shell: bash
-      - name: Run clang-tidy-diff - Push
-        if: github.event_name == 'push'
-        run: |
-          git diff -U0 HEAD HEAD~   | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1 | tee clang-tidy.out 
+          echo "::remove-matcher owner=clang::"
         shell: bash
       - name: Generate Summary
         if: ${{ success() || failure() }}
@@ -83,11 +80,6 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat clang-tidy.out | sed -e 's/\x1b\[[0-9;]*m//g' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-        shell: bash
-      - name: Generate Annotations
-        if: ${{ success() || failure() }}
-        run: |
-          echo "::error file={cvmfs/duplex_curl.h},line={11},title={error: included header curl.h is not used directly}::{message text line 1}"
         shell: bash
 
 
