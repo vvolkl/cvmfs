@@ -69,7 +69,7 @@ jobs:
         run: |
           echo "::add-matcher::.github/scripts/clang_matcher.json" 
           git log
-          git diff -U0  HEAD HEAD~ | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  | tee clang-tidy.out
+          git diff -U0  HEAD HEAD~ | /usr/lib/llvm-${{ env.CLANG_VERSION }}/share/clang/clang-tidy-diff.py -clang-tidy-binary clang-tidy-${{ env.CLANG_VERSION }} -use-color -path ./build -p1  2>&1   | tee clang-tidy.out
           echo "::remove-matcher owner=clang::"
         shell: bash
       - name: Generate Summary
