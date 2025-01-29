@@ -1,6 +1,6 @@
 #!/bin/sh
 
-curl_ssl_config="--without-openssl"
+curl_ssl_config="--without-ssl"
 FIX_COMP=""
 LIBS=""
 if [ x"$(uname)" = x"Darwin" ]; then
