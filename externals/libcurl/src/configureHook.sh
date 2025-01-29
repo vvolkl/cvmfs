@@ -1,10 +1,12 @@
 #!/bin/sh
 
-curl_ssl_config="--with-openssl"
+#curl_ssl_config="--with-openssl"
+curl_ssl_config=""
 FIX_COMP=""
 LIBS=""
 if [ x"$(uname)" = x"Darwin" ]; then
-    curl_ssl_config="--with-openssl=$EXTERNALS_INSTALL_LOCATION"
+    #curl_ssl_config="--with-openssl=$EXTERNALS_INSTALL_LOCATION"
+    curl_ssl_config=""
   FIX_COMP="CC=/usr/bin/clang CXX=/usr/bin/clang++"
   # On macOS, c-ares >= 1.16.1 uses libresolv for finding name servers
   LIBS="-lresolv"
