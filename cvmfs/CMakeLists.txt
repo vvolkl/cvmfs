@@ -572,6 +572,7 @@ if (BUILD_SERVER)
   # /usr/bin/cvmfs_swissknife[_debug]
   #
   set (CVMFS_SWISSKNIFE_SOURCES
+       acl.cc
        backoff.cc
        catalog.cc
        catalog_counters.cc
