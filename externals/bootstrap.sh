@@ -335,7 +335,9 @@ if [ x"$missing_libs" != x ]; then
 fi
 
 for l in $missing_libs; do
-  build_lib $l
+#  build_lib $l
+  echo $l
 done
+#build_lib protobuf
 
 ## Done!

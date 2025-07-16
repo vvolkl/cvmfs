@@ -7,9 +7,11 @@
 #define __TEST_CVMFS_MOCKFUSE
 #define CVMFS_USE_LIBFUSE 3
 #define FUSE_USE_VERSION  31
-#include <fuse3/fuse.h>
-#include <fuse3/fuse_lowlevel.h>
-#include <fuse3/fuse_opt.h>
+//#include <fuse3/fuse.h>
+//#include <fuse3/fuse_lowlevel.h>
+#include <fuse/fuse.h>
+#include <fuse/fuse_lowlevel.h>
+#include <fuse/fuse_opt.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -116,6 +118,11 @@ int fuse_reply_err(fuse_req_t req, int err) {
   return 0;
 }
 
+// Mock implementation of reply functions
+int fuse_reply_statfs(fuse_req_t req, struct statvfs*) {
+  return 0;
+}
+
 
 static void cvmfs_release_test(fuse_req_t req, fuse_ino_t ino,
                                struct fuse_file_info *fi) {
@@ -130,6 +137,7 @@ static void cvmfs_release_test(fuse_req_t req, fuse_ino_t ino,
 static int Init(const loader::LoaderExports *loader_export) { return 0; }
 
 #define fuse_reply_err cvmfs::fuse_reply_err
+#define fuse_reply_statfs cvmfs::fuse_reply_statfs
 #include "cvmfs.cc"
 
 
@@ -177,7 +185,7 @@ class T_Cvmfs : public ::testing::Test {
 
   void TestTearDown() {
     delete mock_catalog_mgr_;
-    delete mock_page_cache_tracker_;
+    //delete mock_page_cache_tracker_;
     delete mock_cache_mgr_;
 
     cvmfs::file_system_->mock_cache_mgr_ = nullptr;

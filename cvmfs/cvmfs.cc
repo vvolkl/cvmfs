@@ -75,7 +75,6 @@
 #include "crypto/crypto_util.h"
 #include "crypto/hash.h"
 #include "directory_entry.h"
-#include "duplex_fuse.h"
 #include "fence.h"
 #include "fetch.h"
 #include "file_chunk.h"
@@ -2101,6 +2100,7 @@ static void SetCvmfsOperations(struct fuse_lowlevel_ops *cvmfs_operations) {
 
   // Init/Fini
   cvmfs_operations->init = cvmfs_init;
+  #ifndef __TEST_CVMFS_MOCKFUSE
   cvmfs_operations->destroy = cvmfs_destroy;
 
   cvmfs_operations->lookup = cvmfs_lookup;
@@ -2119,6 +2119,7 @@ static void SetCvmfsOperations(struct fuse_lowlevel_ops *cvmfs_operations) {
 #if (FUSE_VERSION >= 29)
   cvmfs_operations->forget_multi = cvmfs_forget_multi;
 #endif
+#endif
 }
 
 // Called by cvmfs_talk when switching into read-only cache mode
@@ -2132,8 +2133,8 @@ void UnregisterQuotaListener() {
     cvmfs::watchdog_listener_ = NULL;
   }
 }
-
 bool SendFuseFd(const std::string &socket_path) {
+#ifndef __TEST_CVMFS_MOCKFUSE
   int fuse_fd;
 #if (FUSE_VERSION >= 30)
   fuse_fd = fuse_session_fd(*reinterpret_cast<struct fuse_session **>(
@@ -2152,6 +2153,9 @@ bool SendFuseFd(const std::string &socket_path) {
   const bool retval = SendFd2Socket(sock_fd, fuse_fd);
   close(sock_fd);
   return retval;
+#else
+  return 0;
+#endif
 }
 
 }  // namespace cvmfs
@@ -3014,6 +3018,7 @@ static void FreeSavedState(const int fd_progress,
 
 static void __attribute__((constructor)) LibraryMain() {
   g_cvmfs_exports = new loader::CvmfsExports();
+  #ifndef __TEST_CVMFS_MOCKFUSE
   g_cvmfs_exports->so_version = CVMFS_VERSION;
   g_cvmfs_exports->fnAltProcessFlavor = AltProcessFlavor;
   g_cvmfs_exports->fnInit = Init;
@@ -3021,12 +3026,11 @@ static void __attribute__((constructor)) LibraryMain() {
   g_cvmfs_exports->fnFini = Fini;
   g_cvmfs_exports->fnGetErrorMsg = GetErrorMsg;
   g_cvmfs_exports->fnMaintenanceMode = MaintenanceMode;
-  #ifndef __TEST_CVMFS_MOCKFUSE
   g_cvmfs_exports->fnSaveState = SaveState;
   g_cvmfs_exports->fnRestoreState = RestoreState;
   g_cvmfs_exports->fnFreeSavedState = FreeSavedState;
-  #endif
   cvmfs::SetCvmfsOperations(&g_cvmfs_exports->cvmfs_operations);
+  #endif
 }
 
 

@@ -285,7 +285,6 @@ set(CVMFS_UNITTEST_SOURCES
   ../common/testutil.cc
   ../common/catalog_test_tools.cc
 
-  t_acl.cc
   t_assert_or_log.cc
   t_atomic.cc
   t_authz_fetch.cc
@@ -403,7 +402,6 @@ set(CVMFS_UNITTEST_SOURCES
   t_wpad.cc
   t_xattr.cc
 
-  ${CVMFS_SOURCE_DIR}/acl.cc
   ${CVMFS_SOURCE_DIR}/authz/authz.cc
   ${CVMFS_SOURCE_DIR}/authz/authz_curl.cc
   ${CVMFS_SOURCE_DIR}/authz/authz_fetch.cc
@@ -539,6 +537,7 @@ else ()
     list (APPEND CVMFS_UNITTEST_SOURCES ${CVMFS_SOURCE_DIR}/file_watcher_inotify.cc t_file_watcher.cc)
     add_definitions (-DCVMFS_ENABLE_INOTIFY)
   endif ()
+  list (APPEND CVMFS_UNITTEST_SOURCES ${CVMFS_SOURCE_DIR}/acl.cc t_acl.cc)
 endif ()
 
 set (CVMFS_UNITTESTS_LINK_LIBRARIES "")
@@ -571,7 +570,6 @@ set(CVMFS_UNITTEST_MOCKFUSE_SOURCES
   ../common/catalog_test_tools.cc
 
   t_cvmfs.cc
-  ${CVMFS_SOURCE_DIR}/acl.cc
   ${CVMFS_SOURCE_DIR}/authz/authz.cc
   ${CVMFS_SOURCE_DIR}/authz/authz_curl.cc
   ${CVMFS_SOURCE_DIR}/authz/authz_fetch.cc

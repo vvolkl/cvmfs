@@ -11,8 +11,8 @@
 #include "monitor.h"
 
 int main(int argc, char **argv) {
-  Watchdog *watchdog = Watchdog::Create(NULL);
-  assert(watchdog != NULL);
+  //Watchdog *watchdog = Watchdog::Create(NULL);
+  //assert(watchdog != NULL);
   //  watchdog->Spawn("/tmp/stacktrace.cvmfs_unittests");
   //CvmfsEnvironment *env = new CvmfsEnvironment(argc, argv);
   ::testing::InitGoogleTest(&argc, argv);
@@ -22,6 +22,6 @@ int main(int argc, char **argv) {
   // counting of open file descriptors is accurate
   crypto::InitRng();
   int result = RUN_ALL_TESTS();
-  delete watchdog;
+  //delete watchdog;
   return result;
 }
