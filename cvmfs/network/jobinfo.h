@@ -8,6 +8,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <cstdio>
@@ -110,6 +111,10 @@ class JobInfo {
   int current_metalink_chain_index_;
   int current_host_chain_index_;
 
+  // Absolute time (in seconds since epoch) when this job should be retried
+  // 0 means no retry is scheduled
+  time_t retry_at_;
+
   // Don't fail-over proxies on download errors. default = false
   bool allow_failure_;
 
@@ -208,6 +213,7 @@ class JobInfo {
     return current_metalink_chain_index_;
   }
   int current_host_chain_index() const { return current_host_chain_index_; }
+  time_t retry_at() const { return retry_at_; }
 
   bool allow_failure() const { return allow_failure_; }
   int64_t id() const { return id_; }
@@ -275,6 +281,7 @@ class JobInfo {
   void SetCurrentHostChainIndex(int current_host_chain_index) {
     current_host_chain_index_ = current_host_chain_index;
   }
+  void SetRetryAt(time_t retry_at) { retry_at_ = retry_at; }
 
   void SetAllowFailure(bool allow_failure) { allow_failure_ = allow_failure; }
 

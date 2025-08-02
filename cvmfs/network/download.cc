@@ -39,6 +39,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -616,6 +617,57 @@ void *DownloadManager::MainDownload(void *data) {
       continue;
     }
 
+    // Check for jobs ready to retry
+    time_t now = time(NULL);
+    for (std::vector<JobInfo *>::iterator it = download_mgr->retry_jobs_.begin();
+         it != download_mgr->retry_jobs_.end(); ) {
+      JobInfo *retry_info = *it;
+      if (retry_info->retry_at() <= now) {
+        // Time to retry this job
+        LogCvmfs(kLogDownload, kLogDebug,
+                 "(manager '%s' - id %" PRId64 ") retrying job after backoff",
+                 download_mgr->name_.c_str(), retry_info->id());
+
+        // Reset retry timestamp
+        retry_info->SetRetryAt(0);
+
+        // Reset internal state for retry
+        if (retry_info->sink() != NULL && retry_info->sink()->Reset() != 0) {
+          retry_info->SetErrorCode(kFailLocalIO);
+          // Complete the job with error
+          download_mgr->ReleaseCurlHandle(retry_info->curl_handle());
+          DataTubeElement *ele = new DataTubeElement(kActionStop);
+          retry_info->GetDataTubePtr()->EnqueueBack(ele);
+          retry_info->GetPipeJobResultPtr()->Write<download::Failures>(
+              retry_info->error_code());
+          it = download_mgr->retry_jobs_.erase(it);
+          continue;
+        }
+
+        if (retry_info->expected_hash()) {
+          shash::Init(retry_info->hash_context());
+        }
+        if (retry_info->compressed()) {
+          zlib::DecompressInit(retry_info->GetZstreamPtr());
+        }
+
+        // Re-add to curl multi handle
+        CURL *handle = retry_info->curl_handle();
+        curl_multi_add_handle(download_mgr->curl_multi_, handle);
+        curl_multi_socket_action(download_mgr->curl_multi_, CURL_SOCKET_TIMEOUT,
+                                 0, &still_running);
+
+        // Remove from retry container
+        it = download_mgr->retry_jobs_.erase(it);
+
+        if (!still_running) {
+          gettimeofday(&timeval_start, NULL);
+        }
+      } else {
+        ++it;
+      }
+    }
+
     // Handle timeout
     if (retval == 0) {
       curl_multi_socket_action(download_mgr->curl_multi_, CURL_SOCKET_TIMEOUT,
@@ -697,13 +749,19 @@ void *DownloadManager::MainDownload(void *data) {
                                    0,
                                    &still_running);
         } else {
-          // Return easy handle into pool and write result back
-          download_mgr->ReleaseCurlHandle(easy_handle);
+          // Check if this job is scheduled for retry
+          if (info->retry_at() > 0) {
+            // Job is in retry queue, don't release handle or notify caller yet
+            // The handle will be reused when retry time comes
+          } else {
+            // Return easy handle into pool and write result back
+            download_mgr->ReleaseCurlHandle(easy_handle);
 
-          DataTubeElement *ele = new DataTubeElement(kActionStop);
-          info->GetDataTubePtr()->EnqueueBack(ele);
-          info->GetPipeJobResultPtr()->Write<download::Failures>(
-              info->error_code());
+            DataTubeElement *ele = new DataTubeElement(kActionStop);
+            info->GetDataTubePtr()->EnqueueBack(ele);
+            info->GetPipeJobResultPtr()->Write<download::Failures>(
+                info->error_code());
+          }
         }
       }
     }
@@ -1343,10 +1401,17 @@ void DownloadManager::Backoff(JobInfo *info) {
     info->SetBackoffMs(backoff_max_ms);
   }
 
+  // Calculate absolute time when this job should be retried
+  time_t now = time(NULL);
+  time_t retry_at = now + (info->backoff_ms() / 1000);
+  if (info->backoff_ms() % 1000 != 0) {
+    retry_at++;  // Round up to next second
+  }
+  info->SetRetryAt(retry_at);
+
   LogCvmfs(kLogDownload, kLogDebug,
-           "(manager '%s' - id %" PRId64 ") backing off for %d ms",
-           name_.c_str(), info->id(), info->backoff_ms());
-  SafeSleepMs(info->backoff_ms());
+           "(manager '%s' - id %" PRId64 ") scheduling retry in %d ms (at %ld)",
+           name_.c_str(), info->id(), info->backoff_ms(), retry_at);
 }
 
 void DownloadManager::SetNocache(JobInfo *info) {
@@ -1742,12 +1807,18 @@ bool DownloadManager::VerifyAndFinalize(const int curl_error, JobInfo *info) {
           if (IsProxyTransferError(info->error_code())) {
             if (same_url_retry) {
               Backoff(info);
+              // Add to retry container and return true to indicate retry is scheduled
+              retry_jobs_.push_back(info);
+              return false;  // Don't continue with immediate retry, job is in retry queue
             } else {
               switch_proxy = true;
             }
           } else if (IsHostTransferError(info->error_code())) {
             if (same_url_retry) {
               Backoff(info);
+              // Add to retry container and return true to indicate retry is scheduled
+              retry_jobs_.push_back(info);
+              return false;  // Don't continue with immediate retry, job is in retry queue
             } else {
               switch_host = true;
             }
@@ -1816,6 +1887,24 @@ DownloadManager::~DownloadManager() {
   }
 
   if (atomic_xadd32(&multi_threaded_, 0) == 1) {
+    // Clean up any pending retry jobs
+    for (std::vector<JobInfo *>::iterator it = retry_jobs_.begin();
+         it != retry_jobs_.end(); ++it) {
+      JobInfo *info = *it;
+      // Release curl handle and set error
+      ReleaseCurlHandle(info->curl_handle());
+      info->SetErrorCode(kFailOther);
+      // Notify waiting thread
+      if (info->IsValidDataTube()) {
+        DataTubeElement *ele = new DataTubeElement(kActionStop);
+        info->GetDataTubePtr()->EnqueueBack(ele);
+      }
+      if (info->IsValidPipeJobResults()) {
+        info->GetPipeJobResultPtr()->Write<download::Failures>(info->error_code());
+      }
+    }
+    retry_jobs_.clear();
+
     // Shutdown I/O thread
     pipe_terminate_->Write(kPipeTerminateSignal);
     pthread_join(thread_download_, NULL);

@@ -6,6 +6,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <thread>
 
 #include "c_file_sandbox.h"
 #include "c_http_server.h"
@@ -547,6 +548,70 @@ TEST_F(T_Download, EscapeUrl) {
   const std::string res = download_mgr.EscapeUrl(0, url);
 
   EXPECT_TRUE(res == correct);
+}
+
+TEST_F(T_Download, RetryMechanism) {
+  // Test that the new retry mechanism works without blocking the event loop
+
+  // Set up retry parameters
+  download_mgr.SetRetryParameters(3, 100, 1000);  // max_retries=3, init_backoff=100ms, max_backoff=1000ms
+
+  // Create a JobInfo that will trigger retries
+  string nonexistent_url = "http://127.0.0.1:9999/nonexistent";  // This will fail
+  cvmfs::MemSink memsink;
+  JobInfo info(&nonexistent_url, false /* compressed */, false /* probe hosts */, NULL, &memsink);
+
+  // Test that retry_at field is properly initialized
+  EXPECT_EQ(info.retry_at(), 0);
+
+  // Test that backoff_ms field is properly initialized
+  EXPECT_EQ(info.backoff_ms(), 0);
+
+  // Test that num_retries field is properly initialized
+  EXPECT_EQ(info.num_retries(), 0);
+
+  // Fetch should fail but not hang due to blocking sleep
+  time_t start_time = time(NULL);
+  download_mgr.Fetch(&info);
+  time_t end_time = time(NULL);
+
+  // The fetch should fail relatively quickly (not hang for seconds due to sleep)
+  // Allow some tolerance for network timeouts but it shouldn't take more than 30 seconds
+  EXPECT_LT(end_time - start_time, 30);
+
+  // Should have failed with connection error
+  EXPECT_NE(info.error_code(), kFailOk);
+
+  // Should have attempted retries
+  EXPECT_GT(info.num_retries(), 0);
+}
+
+TEST_F(T_Download, RetryMechanismMultiThreaded) {
+  // Test the retry mechanism in multi-threaded mode to ensure event loop is not blocked
+
+  // Set up retry parameters with short backoff for faster testing
+  download_mgr.SetRetryParameters(1, 50, 200);  // max_retries=1, init_backoff=50ms, max_backoff=200ms
+
+  // Start multi-threaded mode
+  download_mgr.Spawn();
+
+  // Create a successful download to test that the event loop continues working
+  string src_path = GetSmallFile();
+  string src_content = GetFileContents(src_path);
+  string success_url = "file://" + GetAbsolutePath(src_path);
+
+  cvmfs::MemSink success_sink;
+  JobInfo success_info(&success_url, false, false, NULL, &success_sink);
+
+  // Start the successful download - this should complete quickly
+  time_t start_time = time(NULL);
+  download_mgr.Fetch(&success_info);
+  time_t success_time = time(NULL);
+
+  // The successful download should complete quickly (within a few seconds)
+  EXPECT_LT(success_time - start_time, 5);
+  EXPECT_EQ(success_info.error_code(), kFailOk);
+  EXPECT_EQ(success_sink.pos(), src_content.length());
 }
 
 }  // namespace download

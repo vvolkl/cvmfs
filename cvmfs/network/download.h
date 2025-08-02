@@ -321,6 +321,9 @@ class DownloadManager {  // NOLINT(clang-analyzer-optin.performance.Padding)
   uint32_t watch_fds_inuse_;
   uint32_t watch_fds_max_;
 
+  // Container for jobs waiting for retry
+  std::vector<JobInfo *> retry_jobs_;
+
   pthread_mutex_t *lock_options_;
   pthread_mutex_t *lock_synchronous_mode_;
   std::string opt_dns_server_;
