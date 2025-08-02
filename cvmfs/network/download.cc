@@ -618,7 +618,7 @@ void *DownloadManager::MainDownload(void *data) {
     }
 
     // Check for jobs ready to retry
-    time_t now = time(NULL);
+    const time_t now = time(NULL);
     for (std::vector<JobInfo *>::iterator it = download_mgr->retry_jobs_.begin();
          it != download_mgr->retry_jobs_.end(); ) {
       JobInfo *retry_info = *it;
@@ -1402,7 +1402,7 @@ void DownloadManager::Backoff(JobInfo *info) {
   }
 
   // Calculate absolute time when this job should be retried
-  time_t now = time(NULL);
+  const time_t now = time(NULL);
   time_t retry_at = now + (info->backoff_ms() / 1000);
   if (info->backoff_ms() % 1000 != 0) {
     retry_at++;  // Round up to next second
