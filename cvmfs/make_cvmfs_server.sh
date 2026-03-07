@@ -48,6 +48,7 @@ COMPONENTS="\
     server/cvmfs_server_rmfs.sh
     server/cvmfs_server_resign.sh
     server/cvmfs_server_list_catalogs.sh
+    server/cvmfs_server_create_tarball.sh
     server/cvmfs_server_diff.sh
     server/cvmfs_server_info.sh
     server/cvmfs_server_checkout.sh

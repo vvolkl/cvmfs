@@ -1,0 +1,55 @@
+#!/bin/bash
+
+cvmfs_test_name="Create tarball across nested catalogs"
+cvmfs_test_autofs_on_startup=false
+cvmfs_test_suites="quick"
+
+cvmfs_run_test() {
+  logfile=$1
+  local scratch_dir=$(pwd)
+  local repo_dir="/cvmfs/${CVMFS_TEST_REPO}"
+  local subtree="exports/root"
+  local tarball="${scratch_dir}/create-tarball.tar"
+  local reference_tar="${scratch_dir}/mounted.tar"
+  local extracted_dir="${scratch_dir}/extracted"
+  local reference_dir="${scratch_dir}/reference"
+
+  echo "*** create a fresh repository named $CVMFS_TEST_REPO"
+  create_empty_repo $CVMFS_TEST_REPO $CVMFS_TEST_USER NO -g -z || return $?
+  load_repo_config $CVMFS_TEST_REPO || return 10
+
+  echo "*** create an export subtree that crosses a nested catalog"
+  start_transaction $CVMFS_TEST_REPO || return $?
+  mkdir -p "${repo_dir}/${subtree}/nested/leaf"                     || return 11
+  printf 'alpha\n' > "${repo_dir}/${subtree}/alpha.txt"             || return 12
+  printf 'inner payload\n' > "${repo_dir}/${subtree}/nested/inner.txt" || return 13
+  printf 'nested payload\n' > "${repo_dir}/${subtree}/nested/leaf/file.txt"   || return 14
+  touch "${repo_dir}/${subtree}/nested/.cvmfscatalog"               || return 15
+  publish_repo $CVMFS_TEST_REPO || return $?
+
+  echo "*** export the subtree through cvmfs_server create-tarball"
+  # swissknife runs as $CVMFS_TEST_USER; grant access to scratch_dir
+  chmod -R a+rX "$scratch_dir"                                      || return 23
+  chmod a+rwx "$scratch_dir"                                        || return 23
+  cvmfs_server create-tarball -p "/${subtree}" -o "$tarball" $CVMFS_TEST_REPO || return 24
+  tar tf "$tarball" | LC_ALL=C sort > create-tarball.list          || return 27
+  # The tarball should contain the contents of the subtree directory at the
+  # top level (no parent directory prefix), matching container layer layout.
+  tar -C "${repo_dir}/${subtree}"                                   \
+    --exclude='.cvmfscatalog'                                       \
+    --exclude='.cvmfsautocatalog'                                   \
+    -cf "$reference_tar" .                                          || return 28
+  tar tf "$reference_tar" | sed 's|^\./||' | sed '/^$/d' | LC_ALL=C sort > mounted.list || return 29
+  diff -u mounted.list create-tarball.list                           || return 30
+  ! grep -q '\.cvmfscatalog$' create-tarball.list                   || return 31
+
+  echo "*** extract the tarballs and compare them with the mounted subtree"
+  mkdir -p "$extracted_dir" "$reference_dir"                      || return 32
+  tar -C "$extracted_dir" -xf "$tarball"                          || return 33
+  tar -C "$reference_dir" -xf "$reference_tar"                   || return 34
+  compare_directories "$extracted_dir" "$reference_dir"              || return 35
+
+  echo "*** check catalog and data integrity"
+  check_repository $CVMFS_TEST_REPO -i || return $?
+  return 0
+}

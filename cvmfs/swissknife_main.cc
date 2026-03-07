@@ -7,6 +7,7 @@
 
 #include "swissknife.h"
 #include "swissknife_check.h"
+#include "swissknife_create_tarball.h"
 #include "swissknife_filestats.h"
 #include "swissknife_gc.h"
 #include "swissknife_graft.h"
@@ -87,6 +88,7 @@ int main(int argc, char **argv) {
   command_list.push_back(new swissknife::CommandSign());
   command_list.push_back(new swissknife::CommandLetter());
   command_list.push_back(new swissknife::CommandCheck());
+  command_list.push_back(new swissknife::CommandCreateTarball());
   command_list.push_back(new swissknife::CommandListCatalogs());
   command_list.push_back(new swissknife::CommandPull());
   command_list.push_back(new swissknife::CommandZpipe());

@@ -1239,7 +1239,8 @@ is_subcommand() {
   local subcommand="$1"
   local supported_commands="mkfs connect-gw add-replica import publish rollback rmfs alterfs   \
     resign list info tag list-tags lstags check transaction enter abort snapshot    \
-    skeleton migrate list-catalogs diff checkout update-geodb gc catalog-chown      \
+    skeleton migrate list-catalogs create-tarball diff checkout update-geodb gc     \
+    catalog-chown                                                                   \
     eliminate-hardlinks eliminate-bulk-hashes fix-stats update-info update-repoinfo \
     mount fix-permissions masterkeycard ingest ingestsql overlay merge-stats print-stats \
     refresh-lease"
@@ -1380,6 +1381,12 @@ Supported Commands:
                   [-h catalog hashes] [-x machine readable]
                   <fully qualified name>
                   Print a full list of all nested catalogs of a repository
+  create-tarball -p <repository subpath>
+                  -o <output tarball path>
+                  [-l <temporary directory>]
+                  <fully qualified name>
+                  Export a repository subtree from the current repository root
+                  hash into an uncompressed tarball.
   diff            [-m(achine readable)] [-h(eader line)]
                   [-s <source tag>] [-d <destination tag>]
                   <fully qualified name>

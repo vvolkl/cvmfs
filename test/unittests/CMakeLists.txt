@@ -431,6 +431,7 @@ set(CVMFS_UNITTEST_SOURCES
   t_statistics_sql.cc
   t_suid_util.cc
   t_supervisor.cc
+  t_swissknife_create_tarball.cc
   t_swissknife_lease.cc
   t_gc_database.cc
   t_sync_union_tarball.cc

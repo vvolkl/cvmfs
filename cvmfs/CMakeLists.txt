@@ -664,6 +664,7 @@ if (BUILD_SERVER)
        swissknife.cc
        swissknife_assistant.cc
        swissknife_check.cc
+       swissknife_create_tarball.cc
        swissknife_gc.cc
        swissknife_graft.cc
        swissknife_history.cc
