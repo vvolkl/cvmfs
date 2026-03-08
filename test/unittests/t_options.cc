@@ -170,6 +170,31 @@ TYPED_TEST(T_Options, ParseFromStringPreservesLogicalSource) {
   EXPECT_EQ(source, container);
 }
 
+TEST(T_Options, BashParseFromStringUsesWorkingDirectory) {
+  const string working_directory = CreateTempDir("./cvmfs_ut_options_dir");
+  ASSERT_FALSE(working_directory.empty());
+
+  const string helper_file = working_directory + "/proxy";
+  ASSERT_TRUE(SafeWriteToFile("DIRECT\n", helper_file, 0600));
+
+  BashOptionsManager options_manager;
+  options_manager.SwitchTemplateManager(
+      new DefaultOptionsTemplateManager("atlas.cern.ch"));
+  options_manager.set_taint_environment(false);
+
+  const string source = "/cvmfs/config.example.org/etc/cvmfs/default.conf";
+  options_manager.ParseFromString(
+      "CVMFS_HTTP_PROXY=$(cat proxy)\n", source, working_directory);
+
+  string container;
+  EXPECT_TRUE(options_manager.GetValue("CVMFS_HTTP_PROXY", &container));
+  EXPECT_EQ("DIRECT", container);
+  EXPECT_TRUE(options_manager.GetSource("CVMFS_HTTP_PROXY", &container));
+  EXPECT_EQ(source, container);
+
+  EXPECT_TRUE(RemoveTree(working_directory));
+}
+
 TYPED_TEST(T_Options, ProtectedParameter) {
   string container;
   OptionsManager &options_manager = TestFixture::options_manager_;
