@@ -80,6 +80,19 @@ TEST_F(T_Signature, Export) {
   free(signature);
 }
 
+TEST_F(T_Signature, BlacklistString) {
+  EXPECT_TRUE(sign_mgr_.LoadBlacklistString("abc\ndef\n", "@MEMORY@", false));
+  vector<string> blacklist = sign_mgr_.GetBlacklist();
+  ASSERT_EQ(2u, blacklist.size());
+  EXPECT_EQ("abc", blacklist[0]);
+  EXPECT_EQ("def", blacklist[1]);
+
+  EXPECT_TRUE(sign_mgr_.LoadBlacklistString("ghi\n", "@MEMORY@", true));
+  blacklist = sign_mgr_.GetBlacklist();
+  ASSERT_EQ(3u, blacklist.size());
+  EXPECT_EQ("ghi", blacklist[2]);
+}
+
 TEST_F(T_Signature, GetSetKeys) {
   sign_mgr_.GenerateMasterKeyPair();
   sign_mgr_.GenerateCertificate("test.cvmfs.io");

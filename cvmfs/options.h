@@ -16,6 +16,10 @@
 namespace CVMFS_NAMESPACE_GUARD {
 #endif
 
+namespace config_repository {
+struct FileSpec;
+}
+
 /**
  * Templating manager used for variable replacement in the config file
  */
@@ -48,6 +52,12 @@ class DefaultOptionsTemplateManager : public OptionsTemplateManager {
  */
 class OptionsManager {
  public:
+  enum ConfigRepositoryLoadStatus {
+    kConfigRepositoryLoadSuccess,
+    kConfigRepositoryLoadNotFound,
+    kConfigRepositoryLoadFailure
+  };
+
   explicit OptionsManager(OptionsTemplateManager *opt_templ_mgr_param)
       : taint_environment_(true) {
     if (opt_templ_mgr_param != NULL) {
@@ -84,6 +94,10 @@ class OptionsManager {
    */
   virtual void ParsePath(const std::string &config_file,
                          const bool external) = 0;
+
+  virtual void ParseFromString(const std::string &content,
+                               const std::string &source,
+                               const std::string &working_directory = "") = 0;
 
   /**
    * Parses the default config files for cvmfs
@@ -154,6 +168,12 @@ class OptionsManager {
    * @return a vector with all keys contained in the map
    */
   std::vector<std::string> GetAllKeys();
+
+  ConfigRepositoryLoadStatus LoadConfigRepositoryFile(
+      const std::string &config_repository,
+      const config_repository::FileSpec &file_spec,
+      std::string *content,
+      const std::string &helper_binary = "") const;
 
   /**
    * Returns key=value strings from the options array for all keys that match
@@ -257,8 +277,16 @@ class SimpleOptionsParser : public OptionsManager {
                          const bool external __attribute__((unused))) {
     (void)TryParsePath(config_file);
   }
+  virtual void ParseFromString(
+      const std::string &content,
+      const std::string &source,
+      const std::string &working_directory __attribute__((unused)) = "") {
+    (void)TryParseFromString(content, source);
+  }
   // Libcvmfs returns success or failure, the fuse module fails silently
   bool TryParsePath(const std::string &config_file);
+  bool TryParseFromString(const std::string &content,
+                          const std::string &source);
 };  // class SimpleOptionsManager
 
 
@@ -274,6 +302,9 @@ class BashOptionsManager : public OptionsManager {
       OptionsTemplateManager *opt_templ_mgr_param = NULL)
       : OptionsManager(opt_templ_mgr_param) { }
   void ParsePath(const std::string &config_file, const bool external);
+  void ParseFromString(const std::string &content,
+                       const std::string &source,
+                       const std::string &working_directory = "");
 };  // class BashOptionsManager
 
 

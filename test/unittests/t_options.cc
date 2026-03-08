@@ -5,6 +5,7 @@
 #include <cstdlib>
 
 #include "gtest/gtest.h"
+#include "libcvmfs_config.h"
 #include "options.h"
 #include "util/file_guard.h"
 #include "util/posix.h"
@@ -146,6 +147,29 @@ TYPED_TEST(T_Options, ParsePathNoFile) {
   ASSERT_EQ(0u, TestFixture::options_manager_.GetAllKeys().size());
 }
 
+TYPED_TEST(T_Options, ParseFromStringPreservesLogicalSource) {
+  OptionsManager &options_manager = TestFixture::options_manager_;
+  OptionsTemplateManager *opt_temp_mgr = new DefaultOptionsTemplateManager(
+      "atlas.cern.ch");
+  options_manager.SwitchTemplateManager(opt_temp_mgr);
+
+  const string source = "/cvmfs/config.example.org/etc/cvmfs/default.conf";
+  const string content = "CVMFS_HTTP_PROXY=DIRECT\n"
+                         "FOO=abc/@fqrn@\n";
+  options_manager.ParseFromString(content, source, ".");
+
+  string container;
+  EXPECT_TRUE(options_manager.GetValue("CVMFS_HTTP_PROXY", &container));
+  EXPECT_EQ("DIRECT", container);
+  EXPECT_TRUE(options_manager.GetSource("CVMFS_HTTP_PROXY", &container));
+  EXPECT_EQ(source, container);
+
+  EXPECT_TRUE(options_manager.GetValue("FOO", &container));
+  EXPECT_EQ("abc/atlas.cern.ch", container);
+  EXPECT_TRUE(options_manager.GetSource("FOO", &container));
+  EXPECT_EQ(source, container);
+}
+
 TYPED_TEST(T_Options, ProtectedParameter) {
   string container;
   OptionsManager &options_manager = TestFixture::options_manager_;
@@ -243,6 +267,41 @@ TEST(T_OptionsTemplateManager, InsertRetrieveUpdate) {
   opt_templ_mgr.SetTemplate("foo", "foobar");
   EXPECT_TRUE(opt_templ_mgr.HasTemplate("foo"));
   EXPECT_EQ("foobar", opt_templ_mgr.GetTemplate("foo"));
+}
+
+TEST(T_ConfigRepository, SupportedFileSpecs) {
+  using config_repository::Blacklist;
+  using config_repository::DefaultConfig;
+  using config_repository::DomainConfig;
+  using config_repository::RepositoryConfig;
+
+  const string mount_dir = "/cvmfs";
+  const string config_repo = "config.example.org";
+
+  const config_repository::FileSpec default_conf =
+      DefaultConfig(mount_dir, config_repo);
+  EXPECT_EQ("/etc/cvmfs/default.conf", default_conf.repository_path);
+  EXPECT_EQ("/cvmfs/config.example.org/etc/cvmfs/default.conf",
+            default_conf.source_path);
+
+  const config_repository::FileSpec domain_conf =
+      DomainConfig(mount_dir, config_repo, "atlas.cern.ch");
+  EXPECT_EQ("/etc/cvmfs/domain.d/cern.ch.conf", domain_conf.repository_path);
+  EXPECT_EQ("/cvmfs/config.example.org/etc/cvmfs/domain.d/cern.ch.conf",
+            domain_conf.source_path);
+
+  const config_repository::FileSpec repo_conf =
+      RepositoryConfig(mount_dir, config_repo, "atlas.cern.ch");
+  EXPECT_EQ("/etc/cvmfs/config.d/atlas.cern.ch.conf",
+            repo_conf.repository_path);
+  EXPECT_EQ("/cvmfs/config.example.org/etc/cvmfs/config.d/atlas.cern.ch.conf",
+            repo_conf.source_path);
+
+  const config_repository::FileSpec blacklist =
+      Blacklist(mount_dir, config_repo);
+  EXPECT_EQ("/etc/cvmfs/blacklist", blacklist.repository_path);
+  EXPECT_EQ("/cvmfs/config.example.org/etc/cvmfs/blacklist",
+            blacklist.source_path);
 }
 
 void check_parser(OptionsTemplateManager opt_templ_mgr,

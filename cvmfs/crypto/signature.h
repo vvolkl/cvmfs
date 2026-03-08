@@ -60,6 +60,9 @@ class CVMFS_EXPORT SignatureManager {
 
   bool LoadPublicRsaKeys(const std::string &path_list);
   bool LoadBlacklist(const std::string &path_blacklist, bool append);
+  bool LoadBlacklistString(const std::string &blacklist,
+                           const std::string &source,
+                           bool append);
   std::vector<std::string> GetBlacklist();
 
   bool LoadTrustedCaCrl(const std::string &path_list);

@@ -48,6 +48,7 @@
 #include "google/protobuf/stubs/common.h"
 #include "history.h"
 #include "history_sqlite.h"
+#include "libcvmfs_config.h"
 #include "lru_md.h"
 #include "manifest.h"
 #include "manifest_fetch.h"
@@ -1180,13 +1181,38 @@ bool MountPoint::CheckBlacklists() {
 
   string config_repository_path;
   if (options_mgr_->HasConfigRepository(fqrn_, &config_repository_path)) {
-    blacklist = config_repository_path + "blacklist";
-    blacklist_paths_.push_back(blacklist);
-    if (FileExists(blacklist)) {
-      if (!signature_mgr_->LoadBlacklist(blacklist, append)) {
+    const string config_repository =
+        options_mgr_->GetValueOrDie("CVMFS_CONFIG_REPOSITORY");
+    const string mount_dir = options_mgr_->GetValueOrDie("CVMFS_MOUNT_DIR");
+    const config_repository::FileSpec file_spec =
+        config_repository::Blacklist(mount_dir, config_repository);
+    blacklist_paths_.push_back(file_spec.source_path);
+    if (FileExists(file_spec.source_path)) {
+      if (!signature_mgr_->LoadBlacklist(file_spec.source_path, append)) {
         boot_error_ = "failed to load blacklist from config repository";
         boot_status_ = loader::kFailSignature;
         return false;
+      }
+    } else if (!DirectoryExists(GetParentPath(file_spec.source_path))) {
+      string content;
+      switch (options_mgr_->LoadConfigRepositoryFile(
+                  config_repository, file_spec, &content,
+                  file_system_->exe_path())) {
+        case OptionsManager::kConfigRepositoryLoadSuccess:
+          if (!signature_mgr_->LoadBlacklistString(content,
+                                                   file_spec.source_path,
+                                                   append)) {
+            boot_error_ = "failed to load blacklist from config repository";
+            boot_status_ = loader::kFailSignature;
+            return false;
+          }
+          break;
+        case OptionsManager::kConfigRepositoryLoadNotFound:
+          break;
+        case OptionsManager::kConfigRepositoryLoadFailure:
+          boot_error_ = "failed to load blacklist from config repository";
+          boot_status_ = loader::kFailSignature;
+          return false;
       }
     }
   }
@@ -1202,6 +1228,18 @@ bool MountPoint::CheckBlacklists() {
 bool MountPoint::ReloadBlacklists() {
   const bool result = true;
   bool append = false;
+  string config_repository_path;
+  string config_repository;
+  string mount_dir;
+  const bool has_config_repository =
+      options_mgr_->HasConfigRepository(fqrn_, &config_repository_path)
+      && options_mgr_->GetValue("CVMFS_CONFIG_REPOSITORY", &config_repository)
+      && options_mgr_->GetValue("CVMFS_MOUNT_DIR", &mount_dir);
+  config_repository::FileSpec config_blacklist;
+  if (has_config_repository) {
+    config_blacklist = config_repository::Blacklist(mount_dir,
+                                                    config_repository);
+  }
   for (unsigned i = 0; i < blacklist_paths_.size(); ++i) {
     const string blacklist = blacklist_paths_[i];
     if (FileExists(blacklist)) {
@@ -1210,6 +1248,23 @@ bool MountPoint::ReloadBlacklists() {
       if (!retval)
         return false;
       append = true;
+    } else if (has_config_repository
+               && (blacklist == config_blacklist.source_path)
+               && !DirectoryExists(GetParentPath(blacklist))) {
+      string content;
+      switch (options_mgr_->LoadConfigRepositoryFile(
+                  config_repository, config_blacklist, &content,
+                  file_system_->exe_path())) {
+        case OptionsManager::kConfigRepositoryLoadSuccess:
+          if (!signature_mgr_->LoadBlacklistString(content, blacklist, append))
+            return false;
+          append = true;
+          break;
+        case OptionsManager::kConfigRepositoryLoadNotFound:
+          break;
+        case OptionsManager::kConfigRepositoryLoadFailure:
+          return false;
+      }
     }
   }
   return result;

@@ -2672,12 +2672,161 @@ static void Fini() {
 }
 
 
+namespace {
+
+const char *kConfigRepositoryHelperFlavor = "__config_repo__";
+const int kConfigRepositoryHelperNotFound = 2;
+
+void ApplyConfigRepositoryHelperFallbacks(const OptionsManager &fallbacks,
+                                          OptionsManager *options_mgr) {
+  static const char *kKeys[] = {
+    "CVMFS_CACHE_BASE",
+    "CVMFS_SHARED_CACHE",
+    "CVMFS_QUOTA_LIMIT",
+    "CVMFS_QUOTA_THRESHOLD",
+    "CVMFS_NFILES",
+    "CVMFS_WORKSPACE",
+    "CVMFS_HTTP_PROXY",
+    "CVMFS_PROXY_TEMPLATE",
+    "CVMFS_FOLLOW_REDIRECTS",
+    "CVMFS_TIMEOUT",
+    "CVMFS_TIMEOUT_DIRECT",
+    "CVMFS_MAX_RETRIES",
+    "CVMFS_PUBLIC_KEY",
+    "CVMFS_KEYS_DIR",
+    "CVMFS_SERVER_URL",
+    "CVMFS_EXTERNAL_URL",
+  };
+
+  for (size_t i = 0; i < sizeof(kKeys) / sizeof(kKeys[0]); ++i) {
+    if (options_mgr->IsDefined(kKeys[i]))
+      continue;
+    string value;
+    if (!fallbacks.GetValue(kKeys[i], &value))
+      continue;
+    options_mgr->SetValue(kKeys[i], value);
+  }
+}
+
+int ReadConfigRepositoryHelper(int argc, char **argv) {
+  if (argc != 4)
+    return 1;
+
+  const string config_repository = argv[2];
+  const string repository_path = argv[3];
+
+  string helper_config;
+  if (!SafeReadToString(STDIN_FILENO, &helper_config))
+    return 1;
+
+  BashOptionsManager fallback_options(
+      new DefaultOptionsTemplateManager(config_repository));
+  fallback_options.set_taint_environment(false);
+  if (!helper_config.empty())
+    fallback_options.ParseFromString(helper_config, "@CONFIG_REPO_HELPER@", "/");
+
+  BashOptionsManager options_mgr(
+      new DefaultOptionsTemplateManager(config_repository));
+  options_mgr.set_taint_environment(false);
+  options_mgr.ParseDefault(config_repository);
+  ApplyConfigRepositoryHelperFallbacks(fallback_options, &options_mgr);
+
+  FileSystem::SetupLoggingStandalone(options_mgr, config_repository);
+  crypto::SetupLibcryptoMt();
+
+  FileSystem::FileSystemInfo fs_info;
+  fs_info.type = FileSystem::kFsLibrary;
+  fs_info.name = "config-repo-helper." + config_repository;
+  fs_info.exe_path = argv[0];
+  fs_info.options_mgr = &options_mgr;
+  fs_info.foreground = true;
+
+  UniquePtr<FileSystem> file_system(FileSystem::Create(fs_info));
+  if (!file_system.IsValid() || !file_system->IsValid()) {
+    crypto::CleanupLibcryptoMt();
+    return 1;
+  }
+  cvmfs::file_system_ = file_system.weak_ref();
+
+  UniquePtr<MountPoint> mount_point(
+      MountPoint::Create(config_repository, file_system.weak_ref()));
+  if (!mount_point.IsValid() || !mount_point->IsValid()) {
+    cvmfs::file_system_ = NULL;
+    crypto::CleanupLibcryptoMt();
+    return 1;
+  }
+  cvmfs::mount_point_ = mount_point.weak_ref();
+
+  catalog::DirectoryEntry dirent;
+  const uint64_t live_inode =
+      cvmfs::GetDirentForPath(PathString(repository_path), &dirent);
+  if ((live_inode == 0) || !dirent.IsRegular()) {
+    cvmfs::mount_point_ = NULL;
+    cvmfs::file_system_ = NULL;
+    crypto::CleanupLibcryptoMt();
+    return kConfigRepositoryHelperNotFound;
+  }
+  if (dirent.IsChunkedFile()) {
+    cvmfs::mount_point_ = NULL;
+    cvmfs::file_system_ = NULL;
+    crypto::CleanupLibcryptoMt();
+    return 1;
+  }
+
+  Fetcher *fetcher = dirent.IsExternalFile() ? mount_point->external_fetcher()
+                                             : mount_point->fetcher();
+  CacheManager::Label label;
+  label.path = repository_path;
+  label.size = dirent.size();
+  label.zip_algorithm = dirent.compression_algorithm();
+  if (mount_point->catalog_mgr()->volatile_flag())
+    label.flags |= CacheManager::kLabelVolatile;
+  if (dirent.IsExternalFile())
+    label.flags |= CacheManager::kLabelExternal;
+  const int fd = fetcher->Fetch(CacheManager::LabeledObject(dirent.checksum(),
+                                                            label));
+  if (fd < 0) {
+    cvmfs::mount_point_ = NULL;
+    cvmfs::file_system_ = NULL;
+    crypto::CleanupLibcryptoMt();
+    return 1;
+  }
+
+  UniquePtr<char> buffer(static_cast<char *>(smalloc(dirent.size())));
+  const int64_t nbytes = file_system->cache_mgr()->Pread(fd, buffer.weak_ref(),
+                                                         dirent.size(), 0);
+  file_system->cache_mgr()->Close(fd);
+  if ((nbytes < 0) || (static_cast<uint64_t>(nbytes) != dirent.size())) {
+    cvmfs::mount_point_ = NULL;
+    cvmfs::file_system_ = NULL;
+    crypto::CleanupLibcryptoMt();
+    return 1;
+  }
+  if (!SafeWrite(STDOUT_FILENO, buffer.weak_ref(), dirent.size())) {
+    cvmfs::mount_point_ = NULL;
+    cvmfs::file_system_ = NULL;
+    crypto::CleanupLibcryptoMt();
+    return 1;
+  }
+
+  cvmfs::mount_point_ = NULL;
+  cvmfs::file_system_ = NULL;
+  crypto::CleanupLibcryptoMt();
+  return 0;
+}
+
+}  // namespace
+
+
 static int AltProcessFlavor(int argc, char **argv) {
   if (strcmp(argv[1], "__cachemgr__") == 0) {
     return PosixQuotaManager::MainCacheManager(argc, argv);
   }
   if (strcmp(argv[1], "__wpad__") == 0) {
     return download::MainResolveProxyDescription(argc, argv);
+  }
+  if (strcmp(argv[1], kConfigRepositoryHelperFlavor) == 0) {
+    return ReadConfigRepositoryHelper(argc, argv);
   }
   return 1;
 }

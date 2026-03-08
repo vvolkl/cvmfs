@@ -563,11 +563,8 @@ void SignatureManager::GenerateCertificate(const std::string &cn) {
  */
 bool SignatureManager::LoadBlacklist(const std::string &path_blacklist,
                                      bool append) {
-  const MutexLockGuard lock_guard(&lock_blacklist_);
   LogCvmfs(kLogSignature, kLogDebug, "reading from blacklist %s",
            path_blacklist.c_str());
-  if (!append)
-    blacklist_.clear();
 
   const int fd = open(path_blacklist.c_str(), O_RDONLY);
   if (fd < 0)
@@ -577,6 +574,19 @@ bool SignatureManager::LoadBlacklist(const std::string &path_blacklist,
   close(fd);
   if (!retval)
     return false;
+
+  return LoadBlacklistString(blacklist_buffer, path_blacklist, append);
+}
+
+
+bool SignatureManager::LoadBlacklistString(const std::string &blacklist_buffer,
+                                           const std::string &source,
+                                           bool append) {
+  const MutexLockGuard lock_guard(&lock_blacklist_);
+  LogCvmfs(kLogSignature, kLogDebug, "reading from blacklist %s",
+           source.c_str());
+  if (!append)
+    blacklist_.clear();
 
   unsigned num_bytes = 0;
   while (num_bytes < blacklist_buffer.size()) {

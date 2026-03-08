@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <utility>
 
+#include "libcvmfs_config.h"
 #include "sanitizer.h"
 #include "util/exception.h"
 #include "util/logging.h"
@@ -52,6 +53,101 @@ escape_shell_quote:
   }
   result += "'";
   return result;
+}
+
+namespace {
+
+const char *kConfigRepositoryHelperFlavor = "__config_repo__";
+const int kConfigRepositoryHelperNotFound = 2;
+
+std::string MakeConfigRepositoryHelperConfig(const OptionsManager &options_mgr) {
+  static const char *kKeys[] = {
+    "CVMFS_CACHE_BASE",
+    "CVMFS_SHARED_CACHE",
+    "CVMFS_QUOTA_LIMIT",
+    "CVMFS_QUOTA_THRESHOLD",
+    "CVMFS_NFILES",
+    "CVMFS_WORKSPACE",
+    "CVMFS_HTTP_PROXY",
+    "CVMFS_PROXY_TEMPLATE",
+    "CVMFS_FOLLOW_REDIRECTS",
+    "CVMFS_TIMEOUT",
+    "CVMFS_TIMEOUT_DIRECT",
+    "CVMFS_MAX_RETRIES",
+    "CVMFS_PUBLIC_KEY",
+    "CVMFS_KEYS_DIR",
+    "CVMFS_SERVER_URL",
+    "CVMFS_EXTERNAL_URL",
+  };
+
+  std::string result;
+  for (size_t i = 0; i < sizeof(kKeys) / sizeof(kKeys[0]); ++i) {
+    std::string value;
+    if (!options_mgr.GetValue(kKeys[i], &value))
+      continue;
+    result += kKeys[i];
+    result += "=";
+    result += EscapeShell(value);
+    result += "\n";
+  }
+  return result;
+}
+
+bool IsConfigRepositoryRequired(const OptionsManager &options_mgr) {
+  std::string repo_required;
+  return options_mgr.GetValue("CVMFS_CONFIG_REPO_REQUIRED", &repo_required)
+         && options_mgr.IsOn(repo_required);
+}
+
+void ReportMissingConfigRepositoryDirectory(const OptionsManager &options_mgr,
+                                            const std::string &config_path) {
+  if (IsConfigRepositoryRequired(options_mgr)) {
+    LogCvmfs(kLogCvmfs, kLogStderr | kLogSyslogErr,
+             "required configuration repository directory does not exist: %s",
+             config_path.c_str());
+    // Do not crash as in abort(), which can trigger core file creation
+    // from the mount helper
+    exit(1);
+  }
+
+  LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
+           "configuration repository directory does not exist: %s",
+           config_path.c_str());
+}
+
+void ParseExternalConfigRepositoryFile(OptionsManager *options_mgr,
+                                       const std::string &config_repository,
+                                       const config_repository::FileSpec &file_spec) {
+  const std::string config_path = GetParentPath(file_spec.source_path);
+  if (DirectoryExists(config_path)) {
+    options_mgr->ParsePath(file_spec.source_path, true);
+    return;
+  }
+
+  std::string content;
+  const OptionsManager::ConfigRepositoryLoadStatus status =
+      options_mgr->LoadConfigRepositoryFile(config_repository, file_spec,
+                                            &content);
+  if (status == OptionsManager::kConfigRepositoryLoadSuccess) {
+    options_mgr->ParseFromString(content, file_spec.source_path, "/");
+    return;
+  }
+  if (status == OptionsManager::kConfigRepositoryLoadNotFound)
+    return;
+
+  ReportMissingConfigRepositoryDirectory(*options_mgr, config_path);
+}
+
+}  // namespace
+
+
+static bool ReadConfigFile(const string &config_file, string *content) {
+  const int fd = open(config_file.c_str(), O_RDONLY);
+  if (fd < 0)
+    return false;
+  const bool retval = SafeReadToString(fd, content);
+  close(fd);
+  return retval;
 }
 
 
@@ -109,13 +205,21 @@ void OptionsManager::SwitchTemplateManager(
 bool SimpleOptionsParser::TryParsePath(const string &config_file) {
   LogCvmfs(kLogCvmfs, kLogDebug, "Fast-parsing config file %s",
            config_file.c_str());
-  string line;
-  FILE *fconfig = fopen(config_file.c_str(), "r");
-  if (fconfig == NULL)
+  string content;
+  if (!ReadConfigFile(config_file, &content))
     return false;
 
-  // Read line by line and extract parameters
-  while (GetLineFile(fconfig, &line)) {
+  return TryParseFromString(content, config_file);
+}
+
+bool SimpleOptionsParser::TryParseFromString(const string &content,
+                                             const string &source) {
+  string line;
+  unsigned pos = 0;
+  while (pos < content.size()) {
+    line = GetLineMem(content.data() + pos, content.size() - pos);
+    pos += line.length() + 1;
+
     vector<string> tokens;
     const string parameter = SanitizeParameterAssignment(&line, &tokens);
     if (parameter.empty())
@@ -133,11 +237,10 @@ bool SimpleOptionsParser::TryParsePath(const string &config_file) {
     }
 
     ConfigValue config_value;
-    config_value.source = config_file;
+    config_value.source = source;
     config_value.value = value;
     PopulateParameter(parameter, config_value);
   }
-  fclose(fconfig);
   return true;
 }
 
@@ -183,7 +286,6 @@ void BashOptionsManager::ParsePath(const string &config_file,
     close(pipe_open[0]);
   }
   const string config_path = GetParentPath(config_file);
-  FILE *fconfig = fopen(config_file.c_str(), "r");
   if (pid_child > 0) {
     char c = 'C';
     WritePipe(pipe_quit[1], &c, 1);
@@ -191,7 +293,8 @@ void BashOptionsManager::ParsePath(const string &config_file,
     waitpid(pid_child, &statloc, 0);
     close(pipe_quit[1]);
   }
-  if (!fconfig) {
+  string content;
+  if (!ReadConfigFile(config_file, &content)) {
     if (external && !DirectoryExists(config_path)) {
       string repo_required;
       if (GetValue("CVMFS_CONFIG_REPO_REQUIRED", &repo_required)
@@ -212,6 +315,13 @@ void BashOptionsManager::ParsePath(const string &config_file,
     return;
   }
 
+  ParseFromString(content, config_file, config_path);
+}
+
+void BashOptionsManager::ParseFromString(const string &content,
+                                         const string &source,
+                                         const string &working_directory) {
+  int retval;
   int fd_stdin;
   int fd_stdout;
   int fd_stderr;
@@ -221,24 +331,31 @@ void BashOptionsManager::ParsePath(const string &config_file,
   // Let the shell read the file
   string line;
   const string newline = "\n";
+  const string config_path =
+      working_directory.empty() ? GetParentPath(source) : working_directory;
   const string cd = "cd \"" + ((config_path == "") ? "/" : config_path) + "\""
                     + newline;
   WritePipe(fd_stdin, cd.data(), cd.length());
-  while (GetLineFile(fconfig, &line)) {
-    WritePipe(fd_stdin, line.data(), line.length());
+  if (!content.empty()) {
+    WritePipe(fd_stdin, content.data(), content.length());
+  }
+  if (content.empty() || (content[content.length() - 1] != '\n')) {
     WritePipe(fd_stdin, newline.data(), newline.length());
   }
-  rewind(fconfig);
 
   // Read line by line and extract parameters
-  while (GetLineFile(fconfig, &line)) {
+  unsigned pos = 0;
+  while (pos < content.size()) {
+    line = GetLineMem(content.data() + pos, content.size() - pos);
+    pos += line.length() + 1;
+
     vector<string> tokens;
     const string parameter = SanitizeParameterAssignment(&line, &tokens);
     if (parameter.empty())
       continue;
 
     ConfigValue value;
-    value.source = config_file;
+    value.source = source;
     const string sh_echo = "echo $" + parameter + "\n";
     WritePipe(fd_stdin, sh_echo.data(), sh_echo.length());
     GetLineFd(fd_stdout, &value.value);
@@ -248,7 +365,6 @@ void BashOptionsManager::ParsePath(const string &config_file,
   close(fd_stderr);
   close(fd_stdout);
   close(fd_stdin);
-  fclose(fconfig);
 }
 
 
@@ -310,8 +426,18 @@ void OptionsManager::ParseDefault(const string &fqrn) {
   }
   ProtectParameter("CVMFS_CONFIG_REPOSITORY");
   string external_config_path;
-  if ((fqrn != "") && HasConfigRepository(fqrn, &external_config_path))
-    ParsePath(external_config_path + "default.conf", true);
+  string config_repository;
+  string cvmfs_mount_dir;
+  const bool has_config_repository =
+      (fqrn != "")
+      && HasConfigRepository(fqrn, &external_config_path)
+      && GetValue("CVMFS_CONFIG_REPOSITORY", &config_repository)
+      && GetValue("CVMFS_MOUNT_DIR", &cvmfs_mount_dir);
+  if (has_config_repository) {
+    ParseExternalConfigRepositoryFile(
+        this, config_repository,
+        config_repository::DefaultConfig(cvmfs_mount_dir, config_repository));
+  }
   ParsePath("/etc/cvmfs/default.local", false);
 
   if (fqrn != "") {
@@ -321,16 +447,99 @@ void OptionsManager::ParseDefault(const string &fqrn) {
     tokens.erase(tokens.begin());
     domain = JoinStrings(tokens, ".");
 
-    if (HasConfigRepository(fqrn, &external_config_path))
-      ParsePath(external_config_path + "domain.d/" + domain + ".conf", true);
+    if (has_config_repository) {
+      ParseExternalConfigRepositoryFile(
+          this, config_repository,
+          config_repository::DomainConfig(cvmfs_mount_dir, config_repository,
+                                          fqrn));
+    }
     ParsePath("/etc/cvmfs/domain.d/" + domain + ".conf", false);
     ParsePath("/etc/cvmfs/domain.d/" + domain + ".local", false);
 
-    if (HasConfigRepository(fqrn, &external_config_path))
-      ParsePath(external_config_path + "config.d/" + fqrn + ".conf", true);
+    if (has_config_repository) {
+      ParseExternalConfigRepositoryFile(
+          this, config_repository,
+          config_repository::RepositoryConfig(cvmfs_mount_dir,
+                                              config_repository, fqrn));
+    }
     ParsePath("/etc/cvmfs/config.d/" + fqrn + ".conf", false);
     ParsePath("/etc/cvmfs/config.d/" + fqrn + ".local", false);
   }
+}
+
+
+OptionsManager::ConfigRepositoryLoadStatus
+OptionsManager::LoadConfigRepositoryFile(
+    const std::string &config_repository,
+    const config_repository::FileSpec &file_spec,
+    std::string *content,
+    const std::string &helper_binary) const {
+  assert(content != NULL);
+  content->clear();
+
+  std::string binary_path = helper_binary;
+  if (binary_path.empty())
+    binary_path = FindExecutable("cvmfs2");
+  if (binary_path.empty()) {
+    LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
+             "failed to locate cvmfs2 helper for %s",
+             file_spec.source_path.c_str());
+    return kConfigRepositoryLoadFailure;
+  }
+
+  int fd_stdin;
+  int fd_stdout;
+  int fd_stderr;
+  pid_t pid;
+  std::vector<std::string> argv;
+  argv.push_back(kConfigRepositoryHelperFlavor);
+  argv.push_back(config_repository);
+  argv.push_back(file_spec.repository_path);
+  if (!ExecuteBinary(&fd_stdin, &fd_stdout, &fd_stderr, binary_path, argv,
+                     false /* double_fork */, &pid)) {
+    LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
+             "failed to launch cvmfs2 helper for %s",
+             file_spec.source_path.c_str());
+    return kConfigRepositoryLoadFailure;
+  }
+
+  const std::string helper_config = MakeConfigRepositoryHelperConfig(*this);
+  bool retval = true;
+  if (!helper_config.empty())
+    retval = SafeWrite(fd_stdin, helper_config.data(), helper_config.size());
+  close(fd_stdin);
+
+  std::string stdout_output;
+  std::string stderr_output;
+  retval = retval && SafeReadToString(fd_stdout, &stdout_output);
+  close(fd_stdout);
+  retval = retval && SafeReadToString(fd_stderr, &stderr_output);
+  close(fd_stderr);
+
+  const int exit_code = WaitForChild(pid);
+  if (!retval || (exit_code < 0)) {
+    LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
+             "failed to read config repository helper output for %s",
+             file_spec.source_path.c_str());
+    return kConfigRepositoryLoadFailure;
+  }
+  if (exit_code == 0) {
+    content->swap(stdout_output);
+    return kConfigRepositoryLoadSuccess;
+  }
+  if (exit_code == kConfigRepositoryHelperNotFound)
+    return kConfigRepositoryLoadNotFound;
+
+  if (!stderr_output.empty()) {
+    LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
+             "config repository helper failed for %s: %s",
+             file_spec.source_path.c_str(), stderr_output.c_str());
+  } else {
+    LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
+             "config repository helper failed for %s with exit code %d",
+             file_spec.source_path.c_str(), exit_code);
+  }
+  return kConfigRepositoryLoadFailure;
 }
 
 
