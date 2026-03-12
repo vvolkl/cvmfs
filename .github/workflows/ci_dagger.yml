@@ -1,0 +1,83 @@
+name: CI (Dagger)
+
+on:
+  push:
+      branches: ['devel', 'cvmfs*']
+  pull_request:
+      branches: ['devel', 'cvmfs*']
+
+jobs:
+  docker:
+    name: "Cloudtests (Dagger, alma9)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build CVMFS in Image
+        uses: dagger/dagger-for-github@v8.4.0
+        with:
+          version: latest
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          enable-github-summary: true
+          shell: |
+            container |
+              from docker:27-cli |
+              with-unix-socket /var/run/docker.sock /var/run/docker.sock |
+              with-directory /src . |
+              with-workdir /src/test/common/container |
+              with-exec -- sh -lc 'docker compose up --build -d cvmfs-dev' |
+              sync
+
+      - name: Setup CVMFS
+        uses: dagger/dagger-for-github@v8.4.0
+        with:
+          version: latest
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          enable-github-summary: true
+          shell: |
+            container |
+              from docker:27-cli |
+              with-unix-socket /var/run/docker.sock /var/run/docker.sock |
+              with-exec -- sh -lc 'docker exec -u sftnight cvmfs-dev bash -lc "sudo cvmfs_config setup"' |
+              sync
+
+      - name: Run Cloudtests via Dagger
+        uses: dagger/dagger-for-github@v8.4.0
+        with:
+          version: latest
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          enable-github-summary: true
+          shell: |
+            container |
+              from docker:27-cli |
+              with-unix-socket /var/run/docker.sock /var/run/docker.sock |
+              with-exec -- sh -lc 'docker exec -u sftnight cvmfs-dev bash -lc "cd /home/sftnight/cvmfs/test/common/container && CVMFS_TEST_PROXY=DIRECT bash test.sh"' |
+              sync
+
+      - name: Archive logs
+        if: ${{ always() }}
+        uses: dagger/dagger-for-github@v8.4.0
+        with:
+          version: latest
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          enable-github-summary: true
+          shell: |
+            logs=$(
+              container |
+                from docker:27-cli |
+                with-unix-socket /var/run/docker.sock /var/run/docker.sock |
+                with-exec -- sh -lc 'mkdir -p /tmp && docker cp cvmfs-dev:/tmp/cvmfs-client-test.log /tmp/cvmfs-client-test.log && docker cp cvmfs-dev:/tmp/cvmfs-server-test.log /tmp/cvmfs-server-test.log'
+            )
+            $logs | file /tmp/cvmfs-client-test.log | export /tmp/cvmfs-client-test.log
+            $logs | file /tmp/cvmfs-server-test.log | export /tmp/cvmfs-server-test.log
+
+      - name: Upload logs as artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CVMFS test logs (Dagger)
+          path: |
+              /tmp/cvmfs-client-test.log
+              /tmp/cvmfs-server-test.log
