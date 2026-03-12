@@ -2773,8 +2773,9 @@ int ReadConfigRepositoryHelper(int argc, char **argv) {
     return 1;
   }
 
-  Fetcher *fetcher = dirent.IsExternalFile() ? mount_point->external_fetcher()
-                                             : mount_point->fetcher();
+  cvmfs::Fetcher *fetcher =
+      dirent.IsExternalFile() ? mount_point->external_fetcher()
+                             : mount_point->fetcher();
   CacheManager::Label label;
   label.path = repository_path;
   label.size = dirent.size();

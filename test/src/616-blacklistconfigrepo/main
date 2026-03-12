@@ -6,6 +6,7 @@ cvmfs_test_suites="quick"
 
 TEST_616_MOUNTPOINT_MORE=""
 TEST_616_EXTRA_REPO=""
+TEST_616_CONFIG_MOUNT_DIR=""
 cleanup() {
   if [ ! -z $TEST_616_MOUNTPOINT_MORE ]; then
     echo -n "umounting ${TEST_616_MOUNTPOINT_MORE}... "
@@ -16,14 +17,23 @@ cleanup() {
     echo "removing ${TEST_616_EXTRA_REPO}..."
     destroy_repo $TEST_616_EXTRA_REPO
   fi
+
+  if [ ! -z $TEST_616_CONFIG_MOUNT_DIR ]; then
+    rm -rf "$TEST_616_CONFIG_MOUNT_DIR"
+  fi
 }
 
 do_616_mount() {
+  TEST_616_CONFIG_MOUNT_DIR="$(pwd)/mountless-config-root"
+  mkdir -p "$TEST_616_CONFIG_MOUNT_DIR" || return 80
+
   do_local_mount "$TEST_616_MOUNTPOINT_MORE" \
                  "$CVMFS_TEST_REPO_MORE"     \
                  "$(get_repo_url $CVMFS_TEST_REPO_MORE)" \
                  "" \
-                 "CVMFS_CONFIG_REPOSITORY=$CVMFS_TEST_REPO"
+                 "CVMFS_CONFIG_REPOSITORY=$CVMFS_TEST_REPO
+CVMFS_MOUNT_DIR=$TEST_616_CONFIG_MOUNT_DIR
+CVMFS_PUBLIC_KEY=/etc/cvmfs/keys/${CVMFS_TEST_REPO_MORE}.pub:/etc/cvmfs/keys/${CVMFS_TEST_REPO}.pub"
 }
 
 cvmfs_run_test() {

@@ -5,10 +5,24 @@ cvmfs_test_name="Fetch configuration from config repository"
 CVMFS_TEST_050_CONF_FILE=
 CVMFS_TEST_050_CONF_EDIT=
 CVMFS_TEST_050_UMOUNT=
+repo_is_mounted() {
+  mount | grep -q " /cvmfs/$1 "
+}
+
+umount_if_mounted() {
+  local repo="$1"
+  if repo_is_mounted "$repo"; then
+    cvmfs_umount "$repo" || return $?
+  fi
+}
+
 cleanup() {
   [ -z $CVMFS_TEST_050_CONF_FILE ] || sudo rm -f $CVMFS_TEST_050_CONF_FILE
   [ -z $CVMFS_TEST_050_CONF_EDIT ] || sudo sed -i -e "s,CVMFS_MOUNT_DIR=$PWD,CVMFS_MOUNT_DIR=/cvmfs," /etc/cvmfs/default.conf
   [ -z $CVMFS_TEST_050_UMOUNT ]    || sudo umount $CVMFS_TEST_050_UMOUNT
+  umount_if_mounted grid.cern.ch > /dev/null 2>&1 || true
+  umount_if_mounted alice.cern.ch > /dev/null 2>&1 || true
+  umount_if_mounted lhcb.cern.ch > /dev/null 2>&1 || true
 
 }
 
@@ -35,38 +49,34 @@ cvmfs_run_test() {
   echo "*** mount grid.cern.ch with alice.cern.ch as config repository"
   cvmfs_mount grid.cern.ch || return 2
 
-  echo "*** check if alice is mounted"
-  mount | grep alice.cern.ch || return 5
+  echo "*** check that alice stays unmounted while grid uses it as config repository"
+  repo_is_mounted alice.cern.ch && return 5
 
-  echo "*** umount alice and grid *.cern.ch"
-  cvmfs_umount grid.cern.ch  || return 6
-  cvmfs_umount alice.cern.ch || return 6
+  echo "*** umount grid.cern.ch"
+  cvmfs_umount grid.cern.ch || return 6
 
   echo "*** check if alice is umounted"
   [ -d /cvmfs/alice.cern.ch ] || return 7
 
   echo "*** remount grid.cern.ch with alice.cern.ch as config repository"
   cvmfs_mount grid.cern.ch   || return 8
-  mount | grep alice.cern.ch || return 9
+  repo_is_mounted alice.cern.ch && return 9
 
-  echo "*** umount alice and grid *.cern.ch"
-  cvmfs_umount grid.cern.ch  || return 15
-  cvmfs_umount alice.cern.ch || return 16
+  echo "*** umount grid.cern.ch"
+  cvmfs_umount grid.cern.ch || return 15
 
   echo "*** remount grid.cern.ch with alice.cern.ch as config repository (strict mount)"
   cvmfs_mount grid.cern.ch "CVMFS_STRICT_MOUNT=yes" || return 17
-  mount | grep alice.cern.ch || return 18
+  repo_is_mounted alice.cern.ch && return 18
 
-  echo "*** umount alice and grid *.cern.ch"
-  cvmfs_umount grid.cern.ch  || return 10
-  cvmfs_umount alice.cern.ch || return 11
+  echo "*** umount grid.cern.ch"
+  cvmfs_umount grid.cern.ch || return 10
 
   echo "*** prevent hang when config repository gets mistakenly changed"
   cvmfs_umount grid.cern.ch
   cvmfs_mount grid.cern.ch "CVMFS_CONFIG_REPOSITORY=lhcb.cern.ch" || return 50
-  mount | grep lhcb.cern.ch && return 51
-  cvmfs_umount grid.cern.ch  || return 52
-  cvmfs_umount alice.cern.ch || return 53
+  repo_is_mounted lhcb.cern.ch && return 51
+  cvmfs_umount grid.cern.ch || return 52
 
   echo "*** set 'notavail.cern.ch' as the global config repo"
   echo "CVMFS_CONFIG_REPOSITORY=notavail.cern.ch" | sudo tee $defaultconf || return 1

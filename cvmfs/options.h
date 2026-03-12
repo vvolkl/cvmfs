@@ -169,7 +169,7 @@ class OptionsManager {
    */
   std::vector<std::string> GetAllKeys();
 
-  ConfigRepositoryLoadStatus LoadConfigRepositoryFile(
+  virtual ConfigRepositoryLoadStatus LoadConfigRepositoryFile(
       const std::string &config_repository,
       const config_repository::FileSpec &file_spec,
       std::string *content,

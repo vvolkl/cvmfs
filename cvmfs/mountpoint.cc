@@ -78,6 +78,11 @@
 using namespace std;  // NOLINT
 
 
+static bool ShouldAvoidConfigRepositoryPathProbe(const string &source_path) {
+  return HasPrefix(source_path, "/cvmfs/");
+}
+
+
 bool FileSystem::g_alive = false;
 const char *FileSystem::kDefaultCacheBase = "/var/lib/cvmfs";
 const char *FileSystem::kDefaultCacheMgrInstance = "default";
@@ -1186,14 +1191,17 @@ bool MountPoint::CheckBlacklists() {
     const string mount_dir = options_mgr_->GetValueOrDie("CVMFS_MOUNT_DIR");
     const config_repository::FileSpec file_spec =
         config_repository::Blacklist(mount_dir, config_repository);
+    const bool avoid_path_probe =
+        ShouldAvoidConfigRepositoryPathProbe(file_spec.source_path);
     blacklist_paths_.push_back(file_spec.source_path);
-    if (FileExists(file_spec.source_path)) {
+    if (!avoid_path_probe && FileExists(file_spec.source_path)) {
       if (!signature_mgr_->LoadBlacklist(file_spec.source_path, append)) {
         boot_error_ = "failed to load blacklist from config repository";
         boot_status_ = loader::kFailSignature;
         return false;
       }
-    } else if (!DirectoryExists(GetParentPath(file_spec.source_path))) {
+    } else if (avoid_path_probe ||
+               !DirectoryExists(GetParentPath(file_spec.source_path))) {
       string content;
       switch (options_mgr_->LoadConfigRepositoryFile(
                   config_repository, file_spec, &content,
@@ -1242,7 +1250,23 @@ bool MountPoint::ReloadBlacklists() {
   }
   for (unsigned i = 0; i < blacklist_paths_.size(); ++i) {
     const string blacklist = blacklist_paths_[i];
-    if (FileExists(blacklist)) {
+    if (has_config_repository && (blacklist == config_blacklist.source_path) &&
+        ShouldAvoidConfigRepositoryPathProbe(blacklist)) {
+      string content;
+      switch (options_mgr_->LoadConfigRepositoryFile(
+                  config_repository, config_blacklist, &content,
+                  file_system_->exe_path())) {
+        case OptionsManager::kConfigRepositoryLoadSuccess:
+          if (!signature_mgr_->LoadBlacklistString(content, blacklist, append))
+            return false;
+          append = true;
+          break;
+        case OptionsManager::kConfigRepositoryLoadNotFound:
+          break;
+        case OptionsManager::kConfigRepositoryLoadFailure:
+          return false;
+      }
+    } else if (FileExists(blacklist)) {
       const bool retval = signature_mgr_->LoadBlacklist(blacklist, append);
       // TODO(jblomer): this can leave us with a half-loaded blacklist
       if (!retval)

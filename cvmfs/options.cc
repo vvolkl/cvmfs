@@ -99,6 +99,10 @@ bool IsConfigRepositoryRequired(const OptionsManager &options_mgr) {
          && options_mgr.IsOn(repo_required);
 }
 
+bool ShouldAvoidConfigRepositoryPathProbe(const std::string &source_path) {
+  return HasPrefix(source_path, "/cvmfs/");
+}
+
 void ReportMissingConfigRepositoryDirectory(const OptionsManager &options_mgr,
                                             const std::string &config_path) {
   if (IsConfigRepositoryRequired(options_mgr)) {
@@ -115,11 +119,53 @@ void ReportMissingConfigRepositoryDirectory(const OptionsManager &options_mgr,
            config_path.c_str());
 }
 
+void ReportFailedConfigRepositoryLoad(const OptionsManager &options_mgr,
+                                      const std::string &source_path) {
+  if (IsConfigRepositoryRequired(options_mgr)) {
+    LogCvmfs(kLogCvmfs, kLogStderr | kLogSyslogErr,
+             "required configuration repository file could not be loaded: %s",
+             source_path.c_str());
+    exit(1);
+  }
+
+  LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
+           "configuration repository file could not be loaded: %s",
+           source_path.c_str());
+}
+
+bool MaterializeHelperBackedConfigRepositoryFile(
+    const config_repository::FileSpec &file_spec,
+    const std::string &content,
+    std::string *compat_root,
+    std::string *working_directory) {
+  assert(compat_root != NULL);
+  assert(working_directory != NULL);
+
+  if (compat_root->empty())
+    *compat_root = CreateTempDir("/tmp/cvmfs-config-repository");
+  if (compat_root->empty())
+    return false;
+
+  const std::string staged_path = *compat_root + file_spec.repository_path;
+  *working_directory = GetParentPath(staged_path);
+  if (!MkdirDeep(*working_directory, 0700))
+    return false;
+
+  if (!SafeWriteToFile(content, staged_path, 0600)) {
+    LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
+             "failed to materialize helper-backed config repository file %s",
+             file_spec.source_path.c_str());
+  }
+  return true;
+}
+
 void ParseExternalConfigRepositoryFile(OptionsManager *options_mgr,
                                        const std::string &config_repository,
-                                       const config_repository::FileSpec &file_spec) {
+                                       const config_repository::FileSpec &file_spec,
+                                       std::string *compat_root) {
   const std::string config_path = GetParentPath(file_spec.source_path);
-  if (DirectoryExists(config_path)) {
+  if (!ShouldAvoidConfigRepositoryPathProbe(file_spec.source_path) &&
+      DirectoryExists(config_path)) {
     options_mgr->ParsePath(file_spec.source_path, true);
     return;
   }
@@ -129,11 +175,25 @@ void ParseExternalConfigRepositoryFile(OptionsManager *options_mgr,
       options_mgr->LoadConfigRepositoryFile(config_repository, file_spec,
                                             &content);
   if (status == OptionsManager::kConfigRepositoryLoadSuccess) {
-    options_mgr->ParseFromString(content, file_spec.source_path, "/");
+    std::string working_directory = "/";
+    if (!MaterializeHelperBackedConfigRepositoryFile(file_spec, content,
+                                                     compat_root,
+                                                     &working_directory)) {
+      LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
+               "failed to prepare compatibility working directory for %s",
+               file_spec.source_path.c_str());
+    }
+    options_mgr->ParseFromString(content, file_spec.source_path,
+                                 working_directory);
     return;
   }
   if (status == OptionsManager::kConfigRepositoryLoadNotFound)
     return;
+
+  if (ShouldAvoidConfigRepositoryPathProbe(file_spec.source_path)) {
+    ReportFailedConfigRepositoryLoad(*options_mgr, file_spec.source_path);
+    return;
+  }
 
   ReportMissingConfigRepositoryDirectory(*options_mgr, config_path);
 }
@@ -428,6 +488,7 @@ void OptionsManager::ParseDefault(const string &fqrn) {
   string external_config_path;
   string config_repository;
   string cvmfs_mount_dir;
+  string helper_compat_root;
   const bool has_config_repository =
       (fqrn != "")
       && HasConfigRepository(fqrn, &external_config_path)
@@ -436,7 +497,8 @@ void OptionsManager::ParseDefault(const string &fqrn) {
   if (has_config_repository) {
     ParseExternalConfigRepositoryFile(
         this, config_repository,
-        config_repository::DefaultConfig(cvmfs_mount_dir, config_repository));
+        config_repository::DefaultConfig(cvmfs_mount_dir, config_repository),
+        &helper_compat_root);
   }
   ParsePath("/etc/cvmfs/default.local", false);
 
@@ -451,7 +513,8 @@ void OptionsManager::ParseDefault(const string &fqrn) {
       ParseExternalConfigRepositoryFile(
           this, config_repository,
           config_repository::DomainConfig(cvmfs_mount_dir, config_repository,
-                                          fqrn));
+                                          fqrn),
+          &helper_compat_root);
     }
     ParsePath("/etc/cvmfs/domain.d/" + domain + ".conf", false);
     ParsePath("/etc/cvmfs/domain.d/" + domain + ".local", false);
@@ -460,11 +523,15 @@ void OptionsManager::ParseDefault(const string &fqrn) {
       ParseExternalConfigRepositoryFile(
           this, config_repository,
           config_repository::RepositoryConfig(cvmfs_mount_dir,
-                                              config_repository, fqrn));
+                                              config_repository, fqrn),
+          &helper_compat_root);
     }
     ParsePath("/etc/cvmfs/config.d/" + fqrn + ".conf", false);
     ParsePath("/etc/cvmfs/config.d/" + fqrn + ".local", false);
   }
+
+  if (!helper_compat_root.empty())
+    RemoveTree(helper_compat_root);
 }
 
 
