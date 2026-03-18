@@ -1,0 +1,201 @@
+name: CI (QEMU riscv64)
+
+on:
+  push:
+      branches: ['devel', 'cvmfs*']
+  pull_request:
+      branches: ['devel', 'cvmfs*']
+
+jobs:
+  qemu-riscv64:
+    name: "Cloudtests (QEMU riscv64, Fedora)"
+    runs-on: ubuntu-latest
+    # RISC-V on an x86_64 runner is pure TCG emulation (no KVM), so everything
+    # — boot, dnf, the package build — is roughly an order of magnitude slower
+    # than native. Give it close to the GitHub Actions per-job ceiling.
+    timeout-minutes: 350
+
+    env:
+      VM_SSH_PORT: 2222
+      VM_USER: root
+      # Fedora RISC-V QEMU artifacts (raw disk image + edk2 UEFI pflash firmware)
+      # published by the ISCAS Fedora RISC-V SIG mirror. There is no cloud-init
+      # GenericCloud image for riscv64, so we boot the koji-builder disk image
+      # under UEFI and inject our SSH key offline with libguestfs.
+      RISCV_MIRROR: https://openkoji.iscas.ac.cn/pub/dist-repos/dl/QEMU/koji_builder
+      RISCV_IMAGE: fedora-koji-image-builder-41-20241116.raw.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install QEMU and tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-misc \
+            qemu-utils \
+            libguestfs-tools \
+            rsync
+          # libguestfs ships its own appliance; the direct backend avoids needing
+          # libvirt on the runner.
+          echo "LIBGUESTFS_BACKEND=direct" >> "$GITHUB_ENV"
+
+      - name: Generate SSH keypair
+        run: |
+          ssh-keygen -t ed25519 -f $HOME/.ssh/ci_vm_key -N ""
+
+      - name: Cache Fedora RISC-V image and firmware
+        id: cache-image
+        uses: actions/cache@v4
+        with:
+          path: |
+            fedora-riscv-base.raw.gz
+            RISCV_VIRT_CODE.qcow2
+            RISCV_VIRT_VARS.qcow2
+          key: fedora-koji-image-builder-41-20241116
+
+      - name: Download Fedora RISC-V image and firmware
+        if: steps.cache-image.outputs.cache-hit != 'true'
+        run: |
+          wget -q -O fedora-riscv-base.raw.gz "${RISCV_MIRROR}/${RISCV_IMAGE}"
+          wget -q -O RISCV_VIRT_CODE.qcow2    "${RISCV_MIRROR}/fw/RISCV_VIRT_CODE.qcow2"
+          wget -q -O RISCV_VIRT_VARS.qcow2    "${RISCV_MIRROR}/fw/RISCV_VIRT_VARS.qcow2"
+
+      - name: Prepare VM disk image
+        run: |
+          # Decompress to a working raw image and add headroom for build artifacts.
+          gunzip -c fedora-riscv-base.raw.gz > fedora-riscv.raw
+          qemu-img resize -f raw fedora-riscv.raw +30G
+          # The UEFI variable store must be writable, so work on a copy.
+          cp RISCV_VIRT_VARS.qcow2 vars.qcow2
+
+      - name: Inject SSH key into image
+        run: |
+          PUB_KEY_FILE=$HOME/.ssh/ci_vm_key.pub
+          # libguestfs edits the guest filesystem directly (no guest code runs),
+          # so this works regardless of the root filesystem type (btrfs/ext4/xfs).
+          sudo --preserve-env=LIBGUESTFS_BACKEND virt-customize -a fedora-riscv.raw \
+            --root-password password:cvmfs \
+            --ssh-inject "${VM_USER}:file:${PUB_KEY_FILE}" \
+            --hostname cvmfs-riscv \
+            --append-line '/etc/ssh/sshd_config:PermitRootLogin yes' \
+            --append-line '/etc/ssh/sshd_config:PubkeyAuthentication yes' \
+            --firstboot-command 'systemctl enable --now sshd.service'
+
+      - name: Start QEMU riscv64 VM
+        run: |
+          qemu-system-riscv64 \
+            -machine virt \
+            -cpu rv64 \
+            -m 8G \
+            -smp $(nproc) \
+            -drive if=pflash,unit=0,format=qcow2,file=RISCV_VIRT_CODE.qcow2,readonly=on \
+            -drive if=pflash,unit=1,format=qcow2,file=vars.qcow2 \
+            -drive file=fedora-riscv.raw,format=raw,if=virtio \
+            -device virtio-rng-pci \
+            -netdev user,id=net0,hostfwd=tcp::${VM_SSH_PORT}-:22 \
+            -device virtio-net-pci,netdev=net0 \
+            -display none \
+            -serial file:/tmp/vm-serial.log \
+            -daemonize
+
+      - name: Wait for VM to be ready
+        run: |
+          SSH_OPTS="-i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 -p ${VM_SSH_PORT}"
+          echo "Waiting for VM SSH (emulated boot is slow)..."
+          for i in $(seq 1 180); do
+            if ssh $SSH_OPTS ${VM_USER}@localhost "true" 2>/dev/null; then
+              echo "SSH available after ~$((i * 15))s"
+              break
+            fi
+            [ $i -eq 180 ] && { echo "Timed out waiting for VM"; cat /tmp/vm-serial.log; exit 1; }
+            sleep 15
+          done
+
+      - name: Grow root filesystem
+        run: |
+          ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT} \
+              ${VM_USER}@localhost bash -s << 'ENDSSH'
+            set -x
+            # Best effort: claim the headroom added with qemu-img resize. The on-disk
+            # layout (plain partition vs btrfs) varies, so don't fail the job if a
+            # particular grow step is not applicable.
+            ROOT_SRC=$(findmnt -no SOURCE /)
+            ROOT_DEV=$(lsblk -no PKNAME "$ROOT_SRC" 2>/dev/null)
+            ROOT_PARTNUM=$(echo "$ROOT_SRC" | grep -oE '[0-9]+$')
+            if [ -n "$ROOT_DEV" ] && [ -n "$ROOT_PARTNUM" ]; then
+              growpart "/dev/$ROOT_DEV" "$ROOT_PARTNUM" || true
+            fi
+            FSTYPE=$(findmnt -no FSTYPE /)
+            case "$FSTYPE" in
+              btrfs) btrfs filesystem resize max / || true ;;
+              ext4)  resize2fs "$ROOT_SRC" || true ;;
+              xfs)   xfs_growfs / || true ;;
+            esac
+            df -h /
+          ENDSSH
+
+      - name: Install build dependencies
+        run: |
+          ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT} \
+              ${VM_USER}@localhost bash -s << 'ENDSSH'
+            set -e
+            dnf install -y \
+              attr autofs bind-utils e2fsprogs fuse fuse3 gcc httpd iproute jq \
+              lsof nmap-ncat python3 python3-mod_wsgi python3-pip rpm-build \
+              sqlite sudo usbutils
+            pip3 install flask
+            mkdir -p /var/spool/cvmfs
+          ENDSSH
+
+      - name: Copy source code to VM
+        run: |
+          rsync -az --delete \
+            -e "ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT}" \
+            ./ ${VM_USER}@localhost:/root/cvmfs/
+
+      - name: Build CVMFS in VM
+        run: |
+          ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT} \
+              ${VM_USER}@localhost bash -s << 'ENDSSH'
+            set -e
+            cd /root/cvmfs
+            mkdir -p ../buildpackage ../buildpackage_config
+            ./ci/build_package.sh $PWD $PWD/../buildpackage/ cvmfs
+            ./ci/build_package.sh $PWD $PWD/../buildpackage_config/ cvmfs-config
+            dnf install -y \
+              ../buildpackage/RPMS/*/*.rpm \
+              ../buildpackage_config/RPMS/noarch/*.rpm
+          ENDSSH
+
+      - name: Setup CVMFS
+        run: |
+          ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT} \
+              ${VM_USER}@localhost "cvmfs_config setup"
+
+      - name: Run Tests
+        run: |
+          ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT} \
+              ${VM_USER}@localhost bash -s << 'ENDSSH'
+            set -e
+            cd /root/cvmfs/test/common/container
+            CVMFS_TEST_PROXY=DIRECT bash test.sh
+          ENDSSH
+
+      - name: Archive logs
+        if: ${{ always() }}
+        run: |
+          SCP_OPTS="-i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -P ${VM_SSH_PORT}"
+          scp $SCP_OPTS ${VM_USER}@localhost:/tmp/cvmfs-client-test.log /tmp/cvmfs-client-test.log || true
+          scp $SCP_OPTS ${VM_USER}@localhost:/tmp/cvmfs-server-test.log /tmp/cvmfs-server-test.log || true
+
+      - name: Upload logs as artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CVMFS test logs (QEMU riscv64)
+          path: |
+            /tmp/cvmfs-client-test.log
+            /tmp/cvmfs-server-test.log
+            /tmp/vm-serial.log
