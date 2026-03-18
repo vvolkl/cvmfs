@@ -1,0 +1,184 @@
+name: CI (QEMU microvm)
+
+on:
+  push:
+      branches: ['devel', 'cvmfs*']
+  pull_request:
+      branches: ['devel', 'cvmfs*']
+
+jobs:
+  qemu-microvm:
+    name: "Cloudtests (QEMU microvm, alma9)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      VM_SSH_PORT: 2222
+      VM_USER: sftnight
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install QEMU and tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            cloud-image-utils \
+            rsync
+
+      - name: Generate SSH keypair
+        run: |
+          ssh-keygen -t ed25519 -f $HOME/.ssh/ci_vm_key -N ""
+
+      - name: Cache AlmaLinux 9 cloud image
+        id: cache-image
+        uses: actions/cache@v4
+        with:
+          path: almalinux9-base.qcow2
+          key: almalinux9-genericcloud-latest
+
+      - name: Download AlmaLinux 9 cloud image
+        if: steps.cache-image.outputs.cache-hit != 'true'
+        run: |
+          wget -q -O almalinux9-base.qcow2 \
+            https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2
+
+      - name: Prepare VM disk image
+        run: |
+          # Create a copy-on-write working image with extra space for build artifacts
+          qemu-img create -f qcow2 -b almalinux9-base.qcow2 -F qcow2 almalinux9.qcow2 30G
+
+      - name: Extract kernel and initrd from image
+        run: |
+          sudo modprobe nbd max_part=8
+          sudo qemu-nbd --connect=/dev/nbd0 almalinux9-base.qcow2
+          sudo partprobe /dev/nbd0
+          sleep 2
+
+          # AlmaLinux 9 GenericCloud layout: nbd0p1=EFI, nbd0p2=/boot, nbd0p3=/
+          sudo mkdir -p /mnt/boot
+          sudo mount /dev/nbd0p2 /mnt/boot
+
+          # Pick the most recently installed kernel
+          LATEST_VMLINUZ=$(ls -t /mnt/boot/vmlinuz-* 2>/dev/null | head -1)
+          LATEST_INITRD=$(ls -t /mnt/boot/initramfs-*.img 2>/dev/null | grep -v rescue | head -1)
+          sudo cp "$LATEST_VMLINUZ" vmlinuz
+          sudo cp "$LATEST_INITRD"  initrd.img
+          sudo chmod 644 vmlinuz initrd.img
+
+          sudo umount /mnt/boot
+          sudo qemu-nbd --disconnect /dev/nbd0
+
+      - name: Create cloud-init seed image
+        run: |
+          PUB_KEY=$(cat $HOME/.ssh/ci_vm_key.pub)
+          cat > user-data.yaml << EOF
+          #cloud-config
+          users:
+            - name: ${VM_USER}
+              sudo: ALL=(ALL) NOPASSWD:ALL
+              shell: /bin/bash
+              ssh_authorized_keys:
+                - ${PUB_KEY}
+          runcmd:
+            - dnf install -y attr autofs bind-utils e2fsprogs fuse fuse3 gcc httpd iproute jq lsof nc python3 python3-mod_wsgi python3-pip rpm-build sqlite sudo usbutils
+            - pip3 install flask
+            - mkdir -p /var/spool/cvmfs
+          EOF
+
+          cat > meta-data.yaml << EOF
+          instance-id: cvmfs-ci-${{ github.run_id }}
+          local-hostname: cvmfs-microvm
+          EOF
+
+          cloud-localds seed.img user-data.yaml meta-data.yaml
+
+      - name: Start QEMU microvm
+        run: |
+          qemu-system-x86_64 \
+            -M microvm,x-option-roms=off,pit=off,pic=off,rtc=off \
+            -enable-kvm \
+            -m 8G \
+            -smp $(nproc) \
+            -kernel vmlinuz \
+            -initrd initrd.img \
+            -append "root=/dev/vda3 console=ttyS0 rw rootwait quiet" \
+            -drive id=root,file=almalinux9.qcow2,format=qcow2,if=none \
+            -device virtio-blk-device,drive=root \
+            -drive id=seed,file=seed.img,format=raw,if=none \
+            -device virtio-blk-device,drive=seed \
+            -netdev user,id=net0,hostfwd=tcp::${VM_SSH_PORT}-:22 \
+            -device virtio-net-device,netdev=net0 \
+            -nographic \
+            -serial file:/tmp/vm-serial.log \
+            -daemonize
+
+      - name: Wait for VM to be ready
+        run: |
+          SSH_OPTS="-i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 -p ${VM_SSH_PORT}"
+          echo "Waiting for VM SSH..."
+          for i in $(seq 1 90); do
+            if ssh $SSH_OPTS ${VM_USER}@localhost "true" 2>/dev/null; then
+              echo "SSH available after ~$((i * 10))s"
+              break
+            fi
+            [ $i -eq 90 ] && { echo "Timed out waiting for VM"; cat /tmp/vm-serial.log; exit 1; }
+            sleep 10
+          done
+
+          # Wait for cloud-init to finish installing packages
+          ssh $SSH_OPTS ${VM_USER}@localhost "sudo cloud-init status --wait"
+
+      - name: Copy source code to VM
+        run: |
+          rsync -az --delete \
+            -e "ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT}" \
+            ./ ${VM_USER}@localhost:/home/${VM_USER}/cvmfs/
+
+      - name: Build CVMFS in VM
+        run: |
+          ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT} \
+              ${VM_USER}@localhost bash -s << 'ENDSSH'
+            set -e
+            cd /home/sftnight/cvmfs
+            mkdir -p ../buildpackage ../buildpackage_config
+            ./ci/build_package.sh $PWD $PWD/../buildpackage/ cvmfs
+            ./ci/build_package.sh $PWD $PWD/../buildpackage_config/ cvmfs-config
+            sudo dnf install -y \
+              ../buildpackage/RPMS/x86_64/*.rpm \
+              ../buildpackage_config/RPMS/noarch/*.rpm
+          ENDSSH
+
+      - name: Setup CVMFS
+        run: |
+          ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT} \
+              ${VM_USER}@localhost "sudo cvmfs_config setup"
+
+      - name: Run Tests
+        run: |
+          ssh -i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -p ${VM_SSH_PORT} \
+              ${VM_USER}@localhost bash -s << 'ENDSSH'
+            set -e
+            cd /home/sftnight/cvmfs/test/common/container
+            CVMFS_TEST_PROXY=DIRECT bash test.sh
+          ENDSSH
+
+      - name: Archive logs
+        if: ${{ always() }}
+        run: |
+          SCP_OPTS="-i $HOME/.ssh/ci_vm_key -o StrictHostKeyChecking=no -P ${VM_SSH_PORT}"
+          scp $SCP_OPTS ${VM_USER}@localhost:/tmp/cvmfs-client-test.log /tmp/cvmfs-client-test.log || true
+          scp $SCP_OPTS ${VM_USER}@localhost:/tmp/cvmfs-server-test.log /tmp/cvmfs-server-test.log || true
+
+      - name: Upload logs as artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CVMFS test logs (QEMU microvm)
+          path: |
+            /tmp/cvmfs-client-test.log
+            /tmp/cvmfs-server-test.log
+            /tmp/vm-serial.log
