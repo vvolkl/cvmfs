@@ -22,8 +22,6 @@ cvmfs/fskit/
   CvmfsFS.swift          FSVolume subclass + all protocol conformances
   CvmfsExtension.swift   Extension entry point (UnaryFileSystemExtension)
   Bridging-Header.h      Imports CvmfsBridge.h for the Swift compiler
-  CMakeLists.txt         Build description for the .appex bundle
-  README.md              This file
 ```
 
 ---
@@ -230,27 +228,28 @@ EOF
 
 ## Mounting
 
-### Manual mount with `mount_fskit`
+### Manual mount
 
-macOS ships a `mount_fskit` helper that drives FSKit-based filesystems:
+FSKit-based filesystems are mounted with the standard macOS `mount` command.
+There is no separate `mount_fskit` helper — the FSKit framework intercepts
+`mount -t <personality>` calls and routes them to the registered extension.
 
 ```bash
 # Create a mountpoint
 mkdir -p /cvmfs/atlas.cern.ch
 
 # Mount using the registered cvmfs personality
-sudo mount_fskit \
+sudo mount \
   -t cvmfs \
   -o config=/etc/cvmfs/config.d/atlas.cern.ch.conf \
-  cvmfs://atlas.cern.ch \
+  atlas.cern.ch \
   /cvmfs/atlas.cern.ch
 ```
 
-The URL format is `cvmfs://<fqrn>` where `<fqrn>` is the
-fully-qualified repository name. The `-o config=<path>` option points to the
-repository configuration file; if omitted, the default path
-`/etc/cvmfs/repositories.d/<fqrn>/client.conf` is tried, followed by
-`/etc/cvmfs/config.d/<fqrn>.conf`.
+The device argument is the bare fully-qualified repository name (`<fqrn>`).
+The `-o config=<path>` option points to the repository configuration file;
+if omitted, the default path `/etc/cvmfs/repositories.d/<fqrn>/client.conf`
+is tried, followed by `/etc/cvmfs/config.d/<fqrn>.conf`.
 
 ### Mount options
 
@@ -285,8 +284,12 @@ Add an indirect map entry to `/etc/auto_master`:
 Create `/etc/auto_cvmfs`:
 
 ```
-*  -fstype=cvmfs,config=/etc/cvmfs/config.d/&.conf  cvmfs://&
+*  -fstype=cvmfs,fqrn=&,config=/etc/cvmfs/config.d/&.conf  cvmfs
 ```
+
+The device field (`cvmfs`) is a required placeholder; the actual repository
+name is supplied via the `fqrn=&` option so that `parseMountParams` receives
+the bare FQRN rather than a `cvmfs://<fqrn>` URL string.
 
 Then reload:
 
