@@ -35,8 +35,9 @@
 #include "cvmfs/quota_posix.h"
 #include "cvmfs/shortstring.h"
 #include "cvmfs/statistics.h"
-#include "cvmfs/talk.h"
 #include "cvmfs/tracer.h"
+// talk.h intentionally excluded: TalkManager depends on cvmfs.cc-specific
+// globals (loader_exports_, pid_, …) that have no equivalent in FSKit.
 #include "cvmfs/util/logging.h"
 #include "cvmfs/util/mutex.h"
 #include "cvmfs/util/pointer.h"
@@ -226,7 +227,6 @@ static bool GetPathForInode(MountPoint *mp,
     MountPoint              *_mountPoint;
     cvmfs::InodeGenerationInfo _inodeGenInfo;
     FuseRemounter           *_remounter;
-    TalkManager             *_talkMgr;
     OptionsManager          *_optionsMgr;
 }
 
@@ -296,13 +296,9 @@ static bool GetPathForInode(MountPoint *mp,
                                    nullptr,   // no FUSE channel
                                    false);    // no notify invalidation
 
-    // ── TalkManager ────────────────────────────────────────────────────────
-    _talkMgr = TalkManager::Create(_mountPoint->talk_socket_path(),
-                                   _mountPoint,
-                                   _remounter);
-    // TalkManager may be null if the socket path is empty — that's fine.
-
     // ── Spawn background threads ───────────────────────────────────────────
+    // Note: TalkManager (admin socket) is not initialised here because it
+    // depends on cvmfs.cc-specific globals absent in the FSKit build.
     _remounter->Spawn();
     _mountPoint->download_mgr()->Spawn();
     _mountPoint->external_download_mgr()->Spawn();
@@ -310,15 +306,12 @@ static bool GetPathForInode(MountPoint *mp,
         _mountPoint->resolv_conf_watcher()->Spawn();
     _fileSystem->cache_mgr()->quota_mgr()->Spawn();
     _mountPoint->tracer()->Spawn();
-    if (_talkMgr)
-        _talkMgr->Spawn();
     _fileSystem->cache_mgr()->Spawn();
 
     return self;
 }
 
 - (void)_cleanup {
-    delete _talkMgr;     _talkMgr    = nullptr;
     delete _remounter;   _remounter  = nullptr;
     delete _mountPoint;  _mountPoint = nullptr;
     delete _fileSystem;  _fileSystem = nullptr;
