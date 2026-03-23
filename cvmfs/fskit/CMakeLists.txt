@@ -110,24 +110,48 @@ if (NOT CMAKE_GENERATOR MATCHES "Xcode")
 endif ()
 
 # ---------------------------------------------------------------------------
-# Deployment target
-# FSKit is annotated API_AVAILABLE(macos(15.4)) in the public SDK.
-# Override whatever the root CMakeLists set for other targets.
+# Deployment target — FSKit is annotated API_AVAILABLE(macos(15.4)).
+# Set it per-target so the global CMAKE_OSX_DEPLOYMENT_TARGET for the rest of
+# the build (e.g. cvmfs_client) is left at whatever the project needs.
 # ---------------------------------------------------------------------------
-set_target_properties(CvmfsFSKitExtension PROPERTIES
-    OSX_DEPLOYMENT_TARGET "15.4"
-)
-# Also pass it as a compiler flag so both clang and swiftc see it.
+# Detect the target architecture for the Swift -target triple.
+if (CMAKE_OSX_ARCHITECTURES)
+    list(GET CMAKE_OSX_ARCHITECTURES 0 _FSKIT_ARCH)
+else ()
+    execute_process(
+        COMMAND uname -m
+        OUTPUT_VARIABLE _FSKIT_ARCH
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+endif ()
+
 target_compile_options(CvmfsFSKitExtension PRIVATE
     $<$<COMPILE_LANGUAGE:OBJCXX>:-mmacosx-version-min=15.4>
-    $<$<COMPILE_LANGUAGE:Swift>:-target;arm64-apple-macosx15.4>
+    $<$<COMPILE_LANGUAGE:Swift>:-target;${_FSKIT_ARCH}-apple-macos15.4>
 )
 
 # ---------------------------------------------------------------------------
 # Link libraries
 # ---------------------------------------------------------------------------
-# cvmfs_client provides the C++ core (MountPoint, FileSystem, Fetcher, …).
-target_link_libraries(CvmfsFSKitExtension PRIVATE cvmfs_client)
+# cvmfs_client_fskit: static library with -fvisibility=default so all C++
+# class symbols (FileSystem, MountPoint, …) are resolvable at link time.
+# The global -fvisibility=hidden applied to the rest of the build would
+# otherwise hide these symbols inside libcvmfs_client.dylib.
+target_link_libraries(CvmfsFSKitExtension PRIVATE cvmfs_client_fskit)
+
+# Runtime dependencies that the C++ core needs at runtime.
+target_link_libraries(CvmfsFSKitExtension PRIVATE
+    cvmfs_crypto            # libcvmfs_crypto.dylib (OpenSSL wrappers)
+    cvmfs_util              # libcvmfs_util.dylib   (platform helpers)
+    ${SQLITE3_LIBRARY}
+    ${CURL_LIBRARIES}
+    ${CARES_LIBRARIES}
+    ${CARES_LDFLAGS}
+    ${LEVELDB_LIBRARIES}
+    ${PACPARSER_LIBRARIES}
+    ${ZLIB_LIBRARIES}
+    ${PROTOBUF_LITE_LIBRARY}
+    ${OPENSSL_LIBRARIES}
+)
 
 # FSKit framework (macOS 15+).
 find_library(FSKIT_LIB FSKit REQUIRED)

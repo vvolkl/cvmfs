@@ -70,7 +70,7 @@ extension CvmfsItem {
 
         attributes.type =
             d.isDirectory != 0 ? .directory :
-            d.isLink      != 0 ? .symbolicLink :
+            d.isLink      != 0 ? .symlink :
                                   .file
 
         let ts = timespec(tv_sec: __darwin_time_t(d.mtime), tv_nsec: 0)

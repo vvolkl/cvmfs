@@ -66,8 +66,8 @@ extension CvmfsFS: FSVolume.Operations {
     var volumeStatistics: FSStatFSResult {
         let s = bridge.statfs()
         let r = FSStatFSResult(fileSystemTypeName: "cvmfs")
-        r.blockSize       = s.blockSize
-        r.ioSize          = s.blockSize
+        r.blockSize       = Int(s.blockSize)
+        r.ioSize          = Int(s.blockSize)
         r.totalBlocks     = s.totalBlocks
         r.availableBlocks = s.freeBlocks
         r.freeBlocks      = s.freeBlocks
@@ -434,8 +434,8 @@ extension CvmfsFS: FSVolume.OpenCloseOperations {
         // ── Chunked file ────────────────────────────────────────────────
         if dirent.isChunkedFile != 0 {
             var od = CvmfsOpenDirectives()
-            let handle = bridge.openChunkedFileForInode(
-                ino, path: path, dirent: dirent, openDirectives: &od)
+            let handle = bridge.openChunkedFile(
+                forInode: ino, path: path, dirent: dirent, openDirectives: &od)
             guard handle >= 0 else { throw CvmfsError.io }
             cvItem.chunkHandle = UInt64(bitPattern: handle)
             cvItem.directIo    = od.directIo
@@ -642,7 +642,7 @@ private extension CvmfsFS {
         a.allocSize = d.size
         a.linkCount = d.nlink
         a.type      = d.isDirectory != 0 ? .directory :
-                      d.isLink      != 0 ? .symbolicLink : .file
+                      d.isLink      != 0 ? .symlink : .file
         let ts = timespec(tv_sec: __darwin_time_t(d.mtime), tv_nsec: 0)
         a.modifyTime = ts
         a.changeTime = ts
@@ -669,7 +669,7 @@ private extension CvmfsFS {
         let fmt = mode & UInt32(S_IFMT)
         switch fmt {
         case UInt32(S_IFDIR): return .directory
-        case UInt32(S_IFLNK): return .symbolicLink
+        case UInt32(S_IFLNK): return .symlink
         default:              return .file
         }
     }

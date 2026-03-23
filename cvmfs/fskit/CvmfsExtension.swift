@@ -1,19 +1,17 @@
 /**
  * CvmfsExtension.swift
  *
- * FSKit extension entry point.
+ * FSKit extension entry point.  CVMFS is not a network filesystem in the FSKit
+ * sense — all HTTP transport is handled internally by the C++ core.  From the
+ * OS perspective it looks like a pseudo-device filesystem mounted with:
  *
- * Architecture:
- *   - CvmfsExtension (struct) conforms to UnaryFileSystemExtension
- *   - CvmfsFileSystem (class) subclasses FSUnaryFileSystem and conforms to
- *     FSUnaryFileSystemOperations
- *   - loadResource creates a CvmfsBridge + CvmfsFS pair per mount
+ *   mount -t cvmfs atlas.cern.ch /cvmfs/atlas.cern.ch
  *
- * Mount-resource URL format:
- *   cvmfs://<fqrn>?config=<path>
+ * The FQRN ("atlas.cern.ch") and optional config path arrive through
+ * FSTaskOptions.taskOptions, which contains the raw mount arguments as strings.
  *
- * Example:
- *   cvmfs://atlas.cern.ch?config=/etc/cvmfs/repositories.d/atlas.cern.ch/client.conf
+ * FSResource is essentially a placeholder for this filesystem type and is
+ * not inspected beyond what FSKit requires.
  *
  * This file is part of the CernVM File System — FSKit port.
  */
@@ -28,7 +26,8 @@ import os
 
 @main
 struct CvmfsExtension: UnaryFileSystemExtension {
-    var fileSystem: CvmfsFileSystem & FSUnaryFileSystemOperations {
+    // The associated type must be a concrete class, not a protocol composition.
+    var fileSystem: CvmfsFileSystem {
         CvmfsFileSystem()
     }
 }
@@ -42,24 +41,22 @@ final class CvmfsFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
     private let logger = Logger(subsystem: "org.cvmfs.fskit", category: "CvmfsFileSystem")
 
     // ── Probe ──────────────────────────────────────────────────────────────
+    // CVMFS never needs to inspect a block device; it always recognises its
+    // own mount requests. The probe result carries a stable per-FQRN UUID.
 
     func probeResource(
         resource: FSResource,
         replyHandler: @escaping (FSProbeResult?, (any Error)?) -> Void
     ) {
-        logger.debug("probeResource: \(resource, privacy: .public)")
-
-        do {
-            let params = try parseMountParams(resource: resource, options: FSTaskOptions())
-            let containerID = FSContainerIdentifier(
-                uuid: deterministicUUID(from: params.fqrn))
-            replyHandler(
-                FSProbeResult.usable(name: params.fqrn, containerID: containerID),
-                nil)
-        } catch {
-            // If we cannot parse the resource at all, treat it as unusable.
-            replyHandler(FSProbeResult.unusable, nil)
-        }
+        logger.debug("probeResource")
+        // We cannot read the FQRN at probe time (options are not available
+        // here), so return a generic recognised result. The real per-volume
+        // identity is established in loadResource.
+        let containerID = FSContainerIdentifier(
+            uuid: NSUUID(uuidString: "6B43564D-4653-0000-0000-000000000001")! as UUID)
+        replyHandler(
+            FSProbeResult.usable(name: "cvmfs", containerID: containerID),
+            nil)
     }
 
     // ── Load ───────────────────────────────────────────────────────────────
@@ -69,37 +66,29 @@ final class CvmfsFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations {
         options: FSTaskOptions,
         replyHandler: @escaping (FSVolume?, (any Error)?) -> Void
     ) {
-        logger.debug("loadResource: \(resource, privacy: .public)")
+        logger.debug("loadResource")
 
         do {
-            let params = try parseMountParams(resource: resource, options: options)
+            let params = try parseMountParams(options: options)
             logger.info("Mounting CVMFS repository '\(params.fqrn)'")
 
-            var bridgeError: NSError? = nil
-            guard let bridge = CvmfsBridge(
-                fqrn:       params.fqrn,
-                configFile: params.configFile,
-                error:      &bridgeError)
-            else {
-                let err = bridgeError ?? NSError(
-                    domain: "CvmfsBridgeError", code: Int(EIO),
-                    userInfo: [NSLocalizedDescriptionKey: "CvmfsBridge init failed"])
-                logger.error("loadResource bridge init failed: \(err, privacy: .public)")
-                containerStatus = .notReady(err)
-                replyHandler(nil, err)
-                return
-            }
+            // CvmfsBridge init is translated by Swift as a throwing initialiser
+            // (the NSError** parameter becomes implicit).
+            let bridge = try CvmfsBridge(fqrn: params.fqrn,
+                                         configFile: params.configFile)
 
-            containerStatus = .ready
+            containerStatus = FSContainerStatus.ready
+
             replyHandler(
                 CvmfsFS(
                     bridge:     bridge,
-                    volumeID:   FSVolume.Identifier(uuid: deterministicUUID(from: params.fqrn)),
+                    volumeID:   FSVolume.Identifier(
+                                    uuid: deterministicUUID(from: params.fqrn)),
                     volumeName: FSFileName(string: params.fqrn)),
                 nil)
         } catch {
             logger.error("loadResource failed: \(error, privacy: .public)")
-            containerStatus = .notReady(error)
+            containerStatus = FSContainerStatus.notReady(status: error as NSError)
             replyHandler(nil, error)
         }
     }
@@ -129,36 +118,31 @@ private struct MountParams {
     let configFile: String
 }
 
-/// Parse mount parameters from the FSResource URL and FSTaskOptions.
+/// Parse mount parameters from FSTaskOptions.
 ///
-/// Resolution order:
-/// 1. Resource URL host → fqrn, query `config` → configFile
-/// 2. Options keys `fqrn` and `config`
-private func parseMountParams(
-    resource: FSResource,
-    options: FSTaskOptions
-) throws -> MountParams {
+/// FSTaskOptions.taskOptions contains the raw mount arguments as an array of
+/// strings in the form the mount helper delivers them. Typical layout for:
+///
+///   mount -t cvmfs atlas.cern.ch /cvmfs/atlas.cern.ch
+///   mount -t cvmfs -o config=/etc/cvmfs/atlas.conf atlas.cern.ch /cvmfs/...
+///
+/// The FQRN is either the first non-option token (no "=" in it, contains ".")
+/// or an explicit "fqrn=<name>" entry.  The config is "config=<path>".
+private func parseMountParams(options: FSTaskOptions) throws -> MountParams {
+    let tokens = options.taskOptions   // [String]
+
     var fqrn       = ""
     var configFile = ""
 
-    if let url = resource.url {
-        if let host = url.host, !host.isEmpty {
-            fqrn = host
+    for token in tokens {
+        if token.hasPrefix("fqrn=") {
+            fqrn = String(token.dropFirst(5))
+        } else if token.hasPrefix("config=") {
+            configFile = String(token.dropFirst(7))
+        } else if !token.contains("=") && token.contains(".") && fqrn.isEmpty {
+            // Looks like a bare FQRN (e.g. "atlas.cern.ch").
+            fqrn = token
         }
-        if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
-           let param = comps.queryItems?.first(where: { $0.name == "config" }),
-           let val   = param.value, !val.isEmpty {
-            configFile = val
-        }
-    }
-
-    if fqrn.isEmpty,
-       let v = options.optionValue(forKey: "fqrn") as? String, !v.isEmpty {
-        fqrn = v
-    }
-    if configFile.isEmpty,
-       let v = options.optionValue(forKey: "config") as? String, !v.isEmpty {
-        configFile = v
     }
 
     guard !fqrn.isEmpty else {
@@ -166,33 +150,36 @@ private func parseMountParams(
     }
 
     if configFile.isEmpty {
-        configFile = "/etc/cvmfs/repositories.d/\(fqrn)/client.conf"
+        // Standard search path used by the CVMFS configuration package.
+        let paths = [
+            "/etc/cvmfs/config.d/\(fqrn).conf",
+            "/etc/cvmfs/repositories.d/\(fqrn)/client.conf",
+        ]
+        configFile = paths.first { FileManager.default.fileExists(atPath: $0) }
+                  ?? paths[0]   // will produce a clear error from the bridge
     }
 
     return MountParams(fqrn: fqrn, configFile: configFile)
 }
 
 // ---------------------------------------------------------------------------
-// Stable UUID from FQRN (version-5-like name-based derivation)
+// Stable UUID from FQRN
 // ---------------------------------------------------------------------------
 
-/// Derive a stable UUID from a repository FQRN so the same repository always
-/// presents the same container identity across remounts.
+/// Derive a deterministic UUID from a repository FQRN so the same repository
+/// always presents the same container identity across remounts.
 func deterministicUUID(from name: String) -> UUID {
-    let nsBytes: [UInt8] = [                   // DNS namespace UUID
+    // FNV-1a-inspired mix into 16 bytes.
+    var h0: UInt64 = 0xcbf2_9ce4_8422_2325
+    var h1: UInt64 = 0x1000_0000_0000_0000
+    let nsBytes: [UInt8] = [                    // DNS namespace UUID bytes
         0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1,
         0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8
     ]
-    var data = Data(nsBytes)
-    data.append(name.data(using: .utf8) ?? Data())
-
-    // Mix via two FNV-1a-inspired 64-bit accumulators.
-    var h0: UInt64 = 0xcbf2_9ce4_8422_2325
-    var h1: UInt64 = 0x1000_0000_0000_0000
-    for byte in data {
+    for byte in nsBytes + Array((name.utf8)) {
         h0 ^= UInt64(byte)
-        h0 = h0 &* 0x0000_0100_0000_01B3
-        h1 = h1 &* 0xFEFE_FEFE_FEFE_FEFE &+ UInt64(byte)
+        h0  = h0 &* 0x0000_0100_0000_01B3
+        h1  = h1 &* 0xFEFE_FEFE_FEFE_FEFE &+ UInt64(byte)
     }
 
     var out = [UInt8](repeating: 0, count: 16)

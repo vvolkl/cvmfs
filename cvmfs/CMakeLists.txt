@@ -445,6 +445,53 @@ if (BUILD_LIBCVMFS)
     FILES        libcvmfs.h
     DESTINATION  include
   )
+
+  if (BUILD_FSKIT)
+    # The FSKit extension needs to link directly against the C++ implementation
+    # classes (FileSystem, MountPoint, FuseRemounter, …). The shared
+    # libcvmfs_client.dylib compiles those with the global -fvisibility=hidden
+    # flag, so their symbols are not exported and cannot be resolved by the
+    # linker. Build a static companion library with -fvisibility=default so all
+    # symbols are available at link time.
+    add_library (cvmfs_client_fskit STATIC
+                 ${CVMFS_COMMON_CLIENT_SOURCES}
+                 fuse_evict.cc
+                 fuse_remount.cc
+                 notification_client.cc
+                 notify/messages.cc
+                 notify/subscriber_supervisor.cc
+                 notify/subscriber_sse.cc
+                 quota_listener.cc
+                 shortstring.cc
+                 supervisor.cc
+                 # talk.cc intentionally omitted: it depends on cvmfs.cc globals
+                 # (loader_exports_, pid_, etc.) that are FUSE-module-specific.
+                 # TalkManager is disabled in the FSKit bridge initialisation.
+                 url.cc
+    )
+    add_dependencies (cvmfs_client_fskit cache.pb.generated)
+    set_target_properties (cvmfs_client_fskit PROPERTIES
+      COMPILE_FLAGS
+        "-D_FILE_OFFSET_BITS=64 -DCVMFS_LIBCVMFS -fexceptions -fPIC -fvisibility=default"
+    )
+    set_property (TARGET cvmfs_client_fskit
+                  PROPERTY INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/cvmfs")
+    set_property (TARGET cvmfs_client_fskit APPEND
+                  PROPERTY INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}")
+    set_property (TARGET cvmfs_client_fskit APPEND
+                  PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}")
+    target_include_directories (cvmfs_client_fskit PRIVATE
+                                 ${SQLITE3_INCLUDE_DIR}
+                                 ${CARES_INCLUDE_DIRS}
+                                 ${CURL_INCLUDE_DIRS}
+                                 ${LEVELDB_INCLUDE_DIR}
+                                 ${PACPARSER_INCLUDE_DIR}
+                                 ${ZLIB_INCLUDE_DIRS}
+                                 ${PROTOBUF_INCLUDE_DIRS}
+    )
+    target_link_libraries (cvmfs_client_fskit PRIVATE nlohmann_json::nlohmann_json)
+  endif (BUILD_FSKIT)
+
 endif (BUILD_LIBCVMFS)
 
 

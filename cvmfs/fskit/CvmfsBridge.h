@@ -59,9 +59,10 @@ typedef struct CvmfsStatEntry {
 } CvmfsStatEntry;
 
 /// Mirrors PageCacheTracker::OpenDirectives.
+/// Uses C99 bool so Swift imports these as native Bool (not ObjCBool).
 typedef struct CvmfsOpenDirectives {
-    BOOL keepCache;
-    BOOL directIo;
+    bool keepCache;
+    bool directIo;
 } CvmfsOpenDirectives;
 
 /// Mirrors statvfs fields relevant to FSKit.

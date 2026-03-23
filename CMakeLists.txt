@@ -441,17 +441,18 @@ if (BUILD_FSKIT)
   if (NOT BUILD_LIBCVMFS)
     message (FATAL_ERROR "BUILD_FSKIT requires BUILD_LIBCVMFS=yes")
   endif ()
-  # FSKit is available from macOS 15 / Xcode 16 onward.
-  if (CMAKE_OSX_DEPLOYMENT_TARGET AND
-      CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "15.0")
-    message (FATAL_ERROR
-      "BUILD_FSKIT requires CMAKE_OSX_DEPLOYMENT_TARGET >= 15.0 "
-      "(got ${CMAKE_OSX_DEPLOYMENT_TARGET})")
-  endif ()
-  if (NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set (CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING
-         "Minimum macOS deployment target for FSKit" FORCE)
-    message (STATUS "BUILD_FSKIT: setting CMAKE_OSX_DEPLOYMENT_TARGET=15.0")
+  # FSKit became a public API in macOS 15.4 (FSKIT_API_AVAILABILITY_V1).
+  # The FSKit extension target sets its own per-target deployment flags, so we
+  # do not force the global CMAKE_OSX_DEPLOYMENT_TARGET — other targets (e.g.
+  # cvmfs_client) can stay at a lower minimum.  We only validate / auto-set it
+  # when it would be picked up as a default for the whole tree.
+  if (NOT CMAKE_OSX_DEPLOYMENT_TARGET OR
+      CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "15.4")
+    message (STATUS
+      "BUILD_FSKIT: setting CMAKE_OSX_DEPLOYMENT_TARGET=15.4 "
+      "(FSKit requires macOS 15.4+)")
+    set (CMAKE_OSX_DEPLOYMENT_TARGET "15.4" CACHE STRING
+         "Minimum macOS deployment target" FORCE)
   endif ()
   # FSKit replaces the FUSE module on macOS; the two do not share a build tree.
   # Force BUILD_CVMFS off to avoid the MacFUSE / fuse-t dependency.
