@@ -434,6 +434,41 @@ message("Using libcrypto for libcvmfs_crypto from ${Libcrypto_INCLUDE_DIRS}")
 
 
 # Almost all build targets require zlib and sha3
+if (BUILD_FSKIT)
+  if (NOT MACOSX)
+    message (FATAL_ERROR "BUILD_FSKIT is only supported on macOS")
+  endif ()
+  if (NOT BUILD_LIBCVMFS)
+    message (FATAL_ERROR "BUILD_FSKIT requires BUILD_LIBCVMFS=yes")
+  endif ()
+  # FSKit is available from macOS 15 / Xcode 16 onward.
+  if (CMAKE_OSX_DEPLOYMENT_TARGET AND
+      CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS "15.0")
+    message (FATAL_ERROR
+      "BUILD_FSKIT requires CMAKE_OSX_DEPLOYMENT_TARGET >= 15.0 "
+      "(got ${CMAKE_OSX_DEPLOYMENT_TARGET})")
+  endif ()
+  if (NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set (CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING
+         "Minimum macOS deployment target for FSKit" FORCE)
+    message (STATUS "BUILD_FSKIT: setting CMAKE_OSX_DEPLOYMENT_TARGET=15.0")
+  endif ()
+  # FSKit replaces the FUSE module on macOS; the two do not share a build tree.
+  # Force BUILD_CVMFS off to avoid the MacFUSE / fuse-t dependency.
+  # A stale BUILD_CVMFS=ON in the CMake cache (from a prior FUSE build) is the
+  # most common cause of build failures for new FSKit configurations.
+  # To build both in the same tree you must have MacFUSE / fuse-t installed;
+  # in that case use two separate build directories instead.
+  if (BUILD_CVMFS)
+    message (STATUS
+      "BUILD_FSKIT: forcing BUILD_CVMFS=OFF "
+      "(FSKit and the FUSE module are built in separate trees; "
+      "see cvmfs/fskit/README.md)")
+    set (BUILD_CVMFS OFF CACHE BOOL
+         "Build the FUSE-based cvmfs client (requires MacFUSE / fuse-t)" FORCE)
+  endif ()
+endif ()
+
 if (BUILD_CVMFS OR BUILD_LIBCVMFS OR BUILD_SERVER OR BUILD_SERVER_DEBUG OR
     BUILD_UNITTESTS OR BUILD_UNITTESTS_DEBUG OR BUILD_PRELOADER OR
     BUILD_UBENCHMARKS OR BUILD_SHRINKWRAP)
@@ -550,6 +585,10 @@ add_subdirectory (cvmfs)
 
 if (INSTALL_MOUNT_SCRIPTS)
   add_subdirectory (mount)
+endif ()
+
+if (BUILD_FSKIT)
+  add_subdirectory (cvmfs/fskit)
 endif ()
 
 #

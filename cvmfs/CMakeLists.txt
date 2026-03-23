@@ -1291,3 +1291,13 @@ if (BUILD_PRELOADER)
     PERMISSIONS  OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
   )
 endif (BUILD_PRELOADER)
+
+if (BUILD_FSKIT)
+  # BUILD_FSKIT is processed by the root CMakeLists via add_subdirectory(cvmfs/fskit).
+  # Nothing to build here in the cvmfs/ subdirectory itself; the fskit/ sub-tree
+  # links against the cvmfs_client target defined above in this file.
+  if (NOT TARGET cvmfs_client)
+    message (FATAL_ERROR
+      "BUILD_FSKIT requires the cvmfs_client target (enable BUILD_LIBCVMFS=yes)")
+  endif ()
+endif (BUILD_FSKIT)
