@@ -57,6 +57,13 @@ cvmfs_run_test() {
   echo "*** verify published ingest artifacts without remounting the publisher view"
   cvmfs_server list-catalogs -x "$repo" | grep -q "foo/tarball_foo/a" || return 31
 
+  echo "*** verify file content was actually ingested"
+  local content_size
+  content_size=$(cvmfs_swissknife info -r "${CVMFS_STRATUM0}" \
+    -n "$repo" -k /etc/cvmfs/keys/${repo}.pub -e 2>/dev/null \
+    | grep -c 'regular') || true
+  [ "$content_size" -gt 0 ] 2>/dev/null || return 32
+
   cvmfs_server check -i "$repo" || return 40
   check_repo_integrity "$repo" || return 41
 

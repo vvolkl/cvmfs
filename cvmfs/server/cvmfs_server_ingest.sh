@@ -315,6 +315,19 @@ cvmfs_server_ingest() {
     cvmfs_server_transaction $name || die "Impossible to start a transaction"
   fi
 
+  # Local abort helper to avoid repeating the same five arguments at every
+  # error site.  Defined once the four gateway variables are known.
+  _abort() {
+    cvmfs_server_ingest_abort_transaction \
+      "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
+      "$gw_key_file" "$gateway_lease_path"
+  }
+  _fail() {
+    cvmfs_server_ingest_fail \
+      "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
+      "$gw_key_file" "$gateway_lease_path"
+  }
+
   spool_dir=$CVMFS_SPOOL_DIR
   scratch_dir="${spool_dir}/scratch/current"
   stratum0=$CVMFS_STRATUM0
@@ -331,58 +344,29 @@ cvmfs_server_ingest() {
 
 
   if [ $mountless_gateway_ingest -ne 1 ]; then
-    [ $(count_wr_fds /cvmfs/$name) -eq 0 ] || {
-      cvmfs_server_ingest_abort_transaction \
-        "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-        "$gw_key_file" "$gateway_lease_path"
-      die "Open writable file descriptors on $name"
-    }
-    is_cwd_on_path "/cvmfs/$name" && {
-      cvmfs_server_ingest_abort_transaction \
-        "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-        "$gw_key_file" "$gateway_lease_path"
-      die "Current working directory is in /cvmfs/$name.  Please release, e.g. by 'cd \$HOME'."
-    } || true
+    [ $(count_wr_fds /cvmfs/$name) -eq 0 ] || { _abort; die "Open writable file descriptors on $name"; }
+    is_cwd_on_path "/cvmfs/$name" && { _abort; die "Current working directory is in /cvmfs/$name.  Please release, e.g. by 'cd \$HOME'."; } || true
   fi
-  gc_timespan="$(get_auto_garbage_collection_timespan $name)" || {
-    cvmfs_server_ingest_abort_transaction \
-      "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-      "$gw_key_file" "$gateway_lease_path"
-    die
-  }
+  gc_timespan="$(get_auto_garbage_collection_timespan $name)" || { _abort; die; }
   if [ x"$manual_revision" != x"" ]; then
     if [ "x$(echo "$manual_revision" | tr -cd 0-9)" != "x$manual_revision" ]; then
-      cvmfs_server_ingest_abort_transaction \
-        "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-        "$gw_key_file" "$gateway_lease_path"
-      die "Invalid revision number: $manual_revision"
+      _abort; die "Invalid revision number: $manual_revision"
     fi
     local revision_number=
     if [ $mountless_gateway_ingest -eq 1 ]; then
-      if is_checked_out $name; then
-        cvmfs_server_ingest_abort_transaction \
-          "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-          "$gw_key_file" "$gateway_lease_path"
-        die "Manual revision is not supported for mountless gateway ingest on a checked out repository."
-      fi
+      # is_checked_out already rejected earlier; no need to re-check here.
       revision_number=$(get_repo_info -v)
     else
       revision_number=$(attr -qg revision /var/spool/cvmfs/${name}/rdonly)
     fi
     if [ $manual_revision -le $revision_number ]; then
-      cvmfs_server_ingest_abort_transaction \
-        "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-        "$gw_key_file" "$gateway_lease_path"
-      die "Current revision '$revision_number' is ahead of manual revision number '$manual_revision'."
+      _abort; die "Current revision '$revision_number' is ahead of manual revision number '$manual_revision'."
     fi
   fi
 
   if is_checked_out $name; then
     if [ x"$tag_name" = "x" ]; then
-      cvmfs_server_ingest_abort_transaction \
-        "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-        "$gw_key_file" "$gateway_lease_path"
-      die "Publishing a checked out revision requires a tag name"
+      _abort; die "Publishing a checked out revision requires a tag name"
     fi
   else
     if [ -z "$tag_name" ] && [ x"$CVMFS_AUTO_TAG" = x"true" ]; then
@@ -397,24 +381,14 @@ cvmfs_server_ingest() {
     fi
 
     local auto_tag_cleanup_list=
-    auto_tag_cleanup_list="$(filter_auto_tags $name)" || {
-      cvmfs_server_ingest_abort_transaction \
-        "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-        "$gw_key_file" "$gateway_lease_path"
-      die "failed to determine outdated auto tags on $name"
-    }
+    auto_tag_cleanup_list="$(filter_auto_tags $name)" || { _abort; die "failed to determine outdated auto tags on $name"; }
   fi
 
 
   local user_shell="$(get_user_shell $name)"
   local base_hash=
   if [ $mountless_gateway_ingest -eq 1 ]; then
-    base_hash=$(get_published_root_hash $name) || {
-      cvmfs_server_ingest_abort_transaction \
-        "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-        "$gw_key_file" "$gateway_lease_path"
-      die "Failed to get published root hash for $name"
-    }
+    base_hash=$(get_published_root_hash $name) || { _abort; die "Failed to get published root hash for $name"; }
   else
     base_hash=$(get_mounted_root_hash $name)
   fi
@@ -425,10 +399,7 @@ cvmfs_server_ingest() {
     if read_repo_item $name .cvmfsdirtab > "$mountless_dirtab"; then
       if [ -s "$mountless_dirtab" ]; then
         rm -f "$mountless_dirtab"
-        cvmfs_server_ingest_abort_transaction \
-          "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-          "$gw_key_file" "$gateway_lease_path"
-        die "Mountless gateway ingest does not yet support a published .cvmfsdirtab; reopen the publisher mount or clear .cvmfsdirtab first."
+        _abort; die "Mountless gateway ingest does not yet support a published .cvmfsdirtab; reopen the publisher mount or clear .cvmfsdirtab first."
       fi
     fi
     rm -f "$mountless_dirtab"
@@ -547,12 +518,7 @@ cvmfs_server_ingest() {
   # ---> do it! (from here on we are changing things)
   publish_before_hook $name
   if [ $mountless_gateway_ingest -ne 1 ]; then
-    $user_shell "$dirtab_command" || {
-      cvmfs_server_ingest_abort_transaction \
-        "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-        "$gw_key_file" "$gateway_lease_path"
-      die "Failed to apply .cvmfsdirtab"
-    }
+    $user_shell "$dirtab_command" || { _abort; die "Failed to apply .cvmfsdirtab"; }
   fi
 
   # check if we have open file descriptors on /cvmfs/<name>
@@ -568,19 +534,9 @@ cvmfs_server_ingest() {
     publish_starting $name
   fi
 
-  $user_shell "$ingest_command" || {
-    cvmfs_server_ingest_fail \
-      "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-      "$gw_key_file" "$gateway_lease_path"
-    die "Synchronization failed\n\nExecuted Command:\n$ingest_command"
-  }
+  $user_shell "$ingest_command" || { _fail; die "Synchronization failed\n\nExecuted Command:\n$ingest_command"; }
 
-  cvmfs_sys_file_is_regular $manifest || {
-    cvmfs_server_ingest_fail \
-      "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-      "$gw_key_file" "$gateway_lease_path"
-    die "Manifest creation failed\n\nExecuted Command:\n$sync_command"
-  }
+  cvmfs_sys_file_is_regular $manifest || { _fail; die "Manifest creation failed\n\nExecuted Command:\n$ingest_command"; }
 
   local branch_hash=
   local trunk_hash=$(grep "^C" $manifest | tr -d C)
@@ -592,12 +548,7 @@ cvmfs_server_ingest() {
     sign_manifest $name $manifest "" true
     # Replace throw-away manifest with upstream copy
     get_raw_manifest $name > $manifest
-    cvmfs_sys_file_is_empty $manifest && {
-      cvmfs_server_ingest_fail \
-        "$name" "$mountless_gateway_ingest" "$gateway_api_url" \
-        "$gw_key_file" "$gateway_lease_path"
-      die "failed to reload manifest"
-    }
+    cvmfs_sys_file_is_empty $manifest && { _fail; die "failed to reload manifest"; }
   fi
 
   if [ x"$upstream_type" = xgw ]; then
@@ -605,8 +556,13 @@ cvmfs_server_ingest() {
       if [ $mountless_gateway_ingest -eq 1 ]; then
         cvmfs_server_ingest_release_gateway_lease \
           "$name" "$gateway_api_url" "$gw_key_file" "$gateway_lease_path" || {
-          cvmfs_server_ingest_publish_failed_mountless \
-            "$name" "$gateway_api_url" "$gw_key_file" "$gateway_lease_path"
+          # Lease drop failed; clean up the publishing lock and log but do NOT
+          # attempt a second lease release (publish_failed_mountless would
+          # redundantly retry the same drop that just failed).
+          trap - EXIT HUP INT TERM
+          load_repo_config $name
+          release_lock "${CVMFS_SPOOL_DIR}/is_publishing"
+          to_syslog_for_repo $name "failed to publish"
           die "Failed to release gateway lease"
         }
       else
