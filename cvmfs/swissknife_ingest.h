@@ -50,6 +50,8 @@ class Ingest : public Command {
         "gid of new owner of the ingested data (-1 for keep tarball owner)"));
     r.push_back(Parameter::Switch('j', "enable nanosecond timestamps"));
     r.push_back(Parameter::Switch('f', "fast delete for nested catalogs"));
+    r.push_back(Parameter::Optional(
+        '3', "S3 config file for direct-to-S3 data upload (gateway mode)"));
 
     return r;
   }
