@@ -65,10 +65,10 @@ COPY --from=builder /home/sftnight/buildpackage_config/RPMS/noarch/ /tmp/rpms_co
 #   cvmfs-gateway – provides /usr/bin/cvmfs_gateway
 # No FUSE packages needed – mountless mode never mounts anything.
 # psmisc provides `killall` used by the gateway service unit on stop.
-RUN dnf install -y \
+RUN dnf install -y --allowerasing \
         /tmp/rpms_config/*.rpm \
         /tmp/rpms/*.rpm \
-    && dnf install -y \
+    && dnf install -y --allowerasing \
         attr \
         curl \
         jq \
