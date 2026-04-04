@@ -65,8 +65,11 @@ api_call() {
 # ---------------------------------------------------------------------------
 # 1. Wait for the admin API
 # ---------------------------------------------------------------------------
+# Wait for the admin API to accept connections.  We use /v2/GetClusterStatus
+# (with auth) rather than /health because /health returns 503 before a layout
+# is applied (no storage nodes → no quorum), creating a deadlock.
 echo "[setup_garage] Waiting for Garage admin API at ${GARAGE_ADMIN_URL} ..."
-until curl -sf "${GARAGE_ADMIN_URL}/health" > /dev/null 2>&1; do
+until curl -sf -H "${AUTH_HEADER}" "${GARAGE_ADMIN_URL}/v2/GetClusterStatus" > /dev/null 2>&1; do
     sleep 2
 done
 echo "[setup_garage] Garage admin API is ready."
