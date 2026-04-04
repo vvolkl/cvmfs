@@ -15,7 +15,7 @@ USER root
 # Same shadow workaround as the gateway image
 RUN chmod 0400 /etc/shadow
 
-RUN dnf install -y \
+RUN dnf install -y --allowerasing \
         httpd \
         mod_ssl \
         curl \
