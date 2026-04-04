@@ -18,7 +18,12 @@
 #   S3_SECRET_KEY       Desired S3 secret key      (default: cvmfs_secret_key_placeholder_32chars)
 #   S3_BUCKET           Bucket name                (default: cvmfs)
 
-set -e
+set -eu
+
+# Enable tracing in CI for easier debugging
+if [ "${CI:-}" = "true" ] || [ "${SETUP_GARAGE_DEBUG:-}" = "1" ]; then
+  set -x
+fi
 
 GARAGE_ADMIN_URL="${GARAGE_ADMIN_URL:-http://cvmfs-garage:3903}"
 GARAGE_ADMIN_TOKEN="${GARAGE_ADMIN_TOKEN:-garage-admin-token}"
@@ -30,34 +35,57 @@ AUTH_HEADER="Authorization: Bearer ${GARAGE_ADMIN_TOKEN}"
 
 # Helper: make an API call and log the result for debugging.
 # Usage: api_call <method> <endpoint> [json_body]
+#
+# Uses curl WITHOUT -f so we always capture the response body (even on
+# HTTP errors).  The HTTP status code is checked explicitly.
 api_call() {
     _method="$1"
     _endpoint="$2"
-    _body="$3"
+    _body="${3:-}"
 
     _url="${GARAGE_ADMIN_URL}${_endpoint}"
     echo "[setup_garage]   -> ${_method} ${_endpoint}"
 
+    _tmpfile=$(mktemp)
     if [ -n "${_body}" ]; then
         echo "[setup_garage]      body: ${_body}"
-        _resp=$(curl -sf -X "${_method}" \
+        _http_code=$(curl -sS -o "${_tmpfile}" -w '%{http_code}' \
+            -X "${_method}" \
             -H "${AUTH_HEADER}" \
             -H "Content-Type: application/json" \
             -d "${_body}" \
-            "${_url}" 2>&1) || {
-                echo "[setup_garage]   !! FAILED (exit $?): ${_resp}"
+            "${_url}") || {
+                _rc=$?
+                echo "[setup_garage]   !! curl failed (exit ${_rc}): $(cat "${_tmpfile}" 2>/dev/null)"
+                rm -f "${_tmpfile}"
                 return 1
             }
     else
-        _resp=$(curl -sf -X "${_method}" \
+        _http_code=$(curl -sS -o "${_tmpfile}" -w '%{http_code}' \
+            -X "${_method}" \
             -H "${AUTH_HEADER}" \
-            "${_url}" 2>&1) || {
-                echo "[setup_garage]   !! FAILED (exit $?): ${_resp}"
+            "${_url}") || {
+                _rc=$?
+                echo "[setup_garage]   !! curl failed (exit ${_rc}): $(cat "${_tmpfile}" 2>/dev/null)"
+                rm -f "${_tmpfile}"
                 return 1
             }
     fi
 
-    echo "[setup_garage]      response: ${_resp}"
+    _resp=$(cat "${_tmpfile}")
+    rm -f "${_tmpfile}"
+
+    echo "[setup_garage]      HTTP ${_http_code}: ${_resp}"
+
+    case "${_http_code}" in
+        2[0-9][0-9])
+            ;; # 2xx – success
+        *)
+            echo "[setup_garage]   !! API error HTTP ${_http_code}: ${_resp}"
+            return 1
+            ;;
+    esac
+
     # Store response for callers to parse
     API_RESP="${_resp}"
 }
@@ -69,10 +97,19 @@ api_call() {
 # (with auth) rather than /health because /health returns 503 before a layout
 # is applied (no storage nodes → no quorum), creating a deadlock.
 echo "[setup_garage] Waiting for Garage admin API at ${GARAGE_ADMIN_URL} ..."
-until curl -sf -H "${AUTH_HEADER}" "${GARAGE_ADMIN_URL}/v2/GetClusterStatus" > /dev/null 2>&1; do
+_attempts=0
+_max_attempts=30
+until curl -sS -o /dev/null -w '' -H "${AUTH_HEADER}" "${GARAGE_ADMIN_URL}/v2/GetClusterStatus" 2>/dev/null; do
+    _attempts=$((_attempts + 1))
+    if [ "${_attempts}" -ge "${_max_attempts}" ]; then
+        echo "[setup_garage] ERROR: Garage admin API not ready after $((_max_attempts * 2))s"
+        echo "[setup_garage] Last curl attempt:"
+        curl -sS -v -H "${AUTH_HEADER}" "${GARAGE_ADMIN_URL}/v2/GetClusterStatus" 2>&1 || true
+        exit 1
+    fi
     sleep 2
 done
-echo "[setup_garage] Garage admin API is ready."
+echo "[setup_garage] Garage admin API is ready (after $((_attempts * 2))s)."
 
 # ---------------------------------------------------------------------------
 # 2. Assign the single cluster node to a zone and apply layout
@@ -83,7 +120,12 @@ api_call GET "/v2/GetClusterStatus"
 
 # Extract the first node ID from the response.
 # Response format: {"layoutVersion":0,"nodes":[{"id":"<hex>", ...}]}
-NODE_ID=$(echo "${API_RESP}" | sed 's/.*"id":"\([^"]*\)".*/\1/' | head -c 64)
+# Use jq if available, fall back to sed.
+if command -v jq >/dev/null 2>&1; then
+    NODE_ID=$(echo "${API_RESP}" | jq -r '.nodes[0].id')
+else
+    NODE_ID=$(echo "${API_RESP}" | sed 's/.*"id":"\([^"]*\)".*/\1/' | head -c 64)
+fi
 echo "[setup_garage] Node ID: ${NODE_ID}"
 
 if [ -z "${NODE_ID}" ] || [ "${#NODE_ID}" -lt 16 ]; then
@@ -124,7 +166,11 @@ api_call POST "/v2/CreateBucket" "{\"globalAlias\":\"${S3_BUCKET}\"}"
 
 # Extract bucket ID from response.
 # Response format: {"id":"<hex>", ...}
-BUCKET_ID=$(echo "${API_RESP}" | sed 's/.*"id":"\([^"]*\)".*/\1/')
+if command -v jq >/dev/null 2>&1; then
+    BUCKET_ID=$(echo "${API_RESP}" | jq -r '.id')
+else
+    BUCKET_ID=$(echo "${API_RESP}" | sed 's/.*"id":"\([^"]*\)".*/\1/')
+fi
 echo "[setup_garage] Bucket '${S3_BUCKET}' created (id=${BUCKET_ID})."
 
 if [ -z "${BUCKET_ID}" ]; then

@@ -45,6 +45,28 @@ jobs:
         working-directory: test/common/container/publish-mountless
         run: |
           docker compose up -d
+
+          echo "Waiting for garage-setup to complete ..."
+          # garage-setup is a one-shot init container; wait for it explicitly
+          for i in $(seq 1 90); do
+            status=$(docker inspect cvmfs-garage-setup --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
+            if [ "$status" = "exited" ]; then
+              exit_code=$(docker inspect cvmfs-garage-setup --format '{{.State.ExitCode}}')
+              if [ "$exit_code" = "0" ]; then
+                echo "garage-setup completed successfully (after ${i}s)"
+                break
+              else
+                echo "FAIL: garage-setup exited with code $exit_code"
+                echo "=== garage-setup logs ==="
+                docker compose logs garage-setup 2>&1
+                echo "=== garage logs ==="
+                docker compose logs garage 2>&1 | tail -30
+                exit 1
+              fi
+            fi
+            sleep 1
+          done
+
           echo "Waiting for gateway to become ready ..."
           for i in $(seq 1 120); do
             if docker compose logs gateway 2>&1 | grep -q "Starting cvmfs_gateway"; then

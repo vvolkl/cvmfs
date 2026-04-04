@@ -95,13 +95,17 @@ services:
         environment:
             GARAGE_ADMIN_URL: http://cvmfs-garage:3903
             GARAGE_ADMIN_TOKEN: garage-admin-token
+            SETUP_GARAGE_DEBUG: "1"
             <<: *s3-env
         volumes:
             - ./scripts/setup_garage.sh:/setup_garage.sh:ro
         entrypoint: ["/bin/sh", "-c"]
         command:
             - |
-              apk add --no-cache curl jq > /dev/null 2>&1
+              set -e
+              echo '[garage-setup] Installing curl and jq ...'
+              apk add --no-cache curl jq
+              echo '[garage-setup] Running setup_garage.sh ...'
               sh /setup_garage.sh
         restart: "no"
 
