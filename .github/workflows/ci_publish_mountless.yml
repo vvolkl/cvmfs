@@ -28,10 +28,32 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build and start the stack
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build gateway image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: test/common/container/publish-mountless/Dockerfile.gateway
+          tags: cvmfs-gateway-mountless:latest
+          load: true
+          cache-from: type=gha,scope=mountless-gateway
+          cache-to: type=gha,mode=max,scope=mountless-gateway
+
+      - name: Build apache image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: test/common/container/publish-mountless/Dockerfile.apache
+          tags: cvmfs-apache-mountless:latest
+          load: true
+          cache-from: type=gha,scope=mountless-apache
+          cache-to: type=gha,mode=max,scope=mountless-apache
+
+      - name: Start the stack
         working-directory: test/common/container/publish-mountless
         run: |
-          docker compose build
           docker compose up -d
           echo "Waiting for gateway to become ready ..."
           for i in $(seq 1 120); do
