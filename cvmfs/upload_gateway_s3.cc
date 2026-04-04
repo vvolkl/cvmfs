@@ -156,8 +156,6 @@ bool GatewayS3Uploader::Initialize() {
 }
 
 void GatewayS3Uploader::WaitForUpload() const {
-  // Wait for any S3 uploads in flight, then the gateway
-  s3fanout_mgr_->Wait();
   GatewayUploader::WaitForUpload();
 }
 
