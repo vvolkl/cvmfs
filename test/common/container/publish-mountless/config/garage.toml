@@ -10,6 +10,10 @@ db_engine = "sqlite"
 # Single-node: no replication
 replication_factor = 1
 
+# RPC secret (32-byte hex) – required even for single-node setups
+rpc_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+rpc_bind_addr = "0.0.0.0:3901"
+
 # Compress stored objects
 compression_level = 1
 
