@@ -33,19 +33,9 @@ install (
 
 # Install config files.
 # When installed via a package manager, %config(noreplace) / conffiles
-# takes care of not overwriting user changes.  For plain `make install`
-# we skip the file if it already exists.
-foreach(_conf repo.json user.json)
-  install(CODE "
-    set(_dir \"\$ENV{DESTDIR}${SYSCONF_INSTALL_DIR}/cvmfs/gateway\")
-    set(_src \"${CMAKE_CURRENT_SOURCE_DIR}/config/${_conf}\")
-    if(NOT EXISTS \"\${_dir}/${_conf}\")
-      message(STATUS \"Installing default config: \${_dir}/${_conf}\")
-      file(INSTALL DESTINATION \"\${_dir}\" TYPE FILE
-           PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
-           FILES \"\${_src}\")
-    else()
-      message(STATUS \"Preserving existing config: \${_dir}/${_conf}\")
-    endif()
-  ")
-endforeach()
+# takes care of not overwriting user changes.
+install(
+  FILES config/repo.json config/user.json
+  DESTINATION "${SYSCONF_INSTALL_DIR}/cvmfs/gateway"
+  PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+)
