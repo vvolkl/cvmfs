@@ -41,10 +41,12 @@ jobs:
             fi
             sleep 1
           done
-          # Also wait for Apache to be serving
+          # Wait for Apache to be responding (gateway mode with -P does not
+          # create .cvmfswhitelist or .cvmfspublished until the first ingest,
+          # so we just check that httpd is up).
           for i in $(seq 1 30); do
-            if docker compose exec -T apache curl -sf http://localhost/cvmfs/test.repo.org/.cvmfswhitelist > /dev/null 2>&1; then
-              echo "Apache is serving the repository"
+            if docker compose exec -T apache curl -sf -o /dev/null -w '%{http_code}' http://localhost/ 2>/dev/null | grep -q '\(200\|403\)'; then
+              echo "Apache is responding"
               break
             fi
             sleep 1
@@ -78,14 +80,20 @@ jobs:
             echo "OK: repository config exists"
           '
 
-      - name: Check repository is accessible via HTTP
+      - name: Check gateway API is reachable
         working-directory: test/common/container/publish-mountless
         run: |
-          echo "=== Checking .cvmfspublished ==="
-          docker compose exec -T apache \
-            curl -sf http://localhost/cvmfs/test.repo.org/.cvmfspublished
+          echo "=== Checking gateway API ==="
+          docker compose exec -T gateway \
+            curl -sf http://localhost:4929/api/v1
           echo ""
-          echo "OK: .cvmfspublished is accessible"
+          echo "OK: gateway API is responding"
+
+          echo "=== Checking Apache is up ==="
+          docker compose exec -T apache \
+            curl -sf -o /dev/null -w 'HTTP %{http_code}' http://localhost/
+          echo ""
+          echo "OK: Apache is responding"
 
       - name: Ingest a tarball
         working-directory: test/common/container/publish-mountless

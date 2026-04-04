@@ -84,7 +84,7 @@ services:
     # -----------------------------------------------------------------------
     gateway:
         build:
-            context: ../../..
+            context: ../../../..
             dockerfile: test/common/container/publish/Dockerfile.gateway
         image: cvmfs-gateway:latest
         container_name: cvmfs-gateway
@@ -118,7 +118,7 @@ services:
     # -----------------------------------------------------------------------
     apache:
         build:
-            context: ../../..
+            context: ../../../..
             dockerfile: test/common/container/publish/Dockerfile.apache
         image: cvmfs-apache:latest
         container_name: cvmfs-apache
