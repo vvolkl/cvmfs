@@ -41,16 +41,6 @@ jobs:
           cache-from: type=gha,scope=mountless-gateway
           cache-to: type=gha,mode=max,scope=mountless-gateway
 
-      - name: Build apache image (cached)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: test/common/container/publish-mountless/Dockerfile.apache
-          tags: cvmfs-apache-mountless:latest
-          load: true
-          cache-from: type=gha,scope=mountless-apache
-          cache-to: type=gha,mode=max,scope=mountless-apache
-
       - name: Start the stack
         working-directory: test/common/container/publish-mountless
         run: |
@@ -63,12 +53,13 @@ jobs:
             fi
             sleep 1
           done
-          # Wait for Apache to be responding (gateway mode with -P does not
-          # create .cvmfswhitelist or .cvmfspublished until the first ingest,
-          # so we just check that httpd is up).
+          # Verify Garage web endpoint is serving (website mode)
           for i in $(seq 1 30); do
-            if docker compose exec -T apache curl -sf -o /dev/null -w '%{http_code}' http://localhost/ 2>/dev/null | grep -q '\(200\|403\)'; then
-              echo "Apache is responding"
+            if docker compose exec -T gateway \
+              curl -sf -o /dev/null -w '%{http_code}' \
+                -H 'Host: cvmfs.web.garage.localhost' \
+                http://cvmfs-garage:3902/ 2>/dev/null | grep -qE '(200|404)'; then
+              echo "Garage web endpoint is responding"
               break
             fi
             sleep 1
@@ -111,11 +102,12 @@ jobs:
           echo ""
           echo "OK: gateway API is responding"
 
-          echo "=== Checking Apache is up ==="
-          docker compose exec -T apache \
-            curl -sf -o /dev/null -w 'HTTP %{http_code}' http://localhost/
+          echo "=== Checking Garage web endpoint ==="
+          docker compose exec -T gateway \
+            curl -sf -o /dev/null -w 'HTTP %{http_code}' \
+              http://cvmfs.web.garage.localhost:3902/
           echo ""
-          echo "OK: Apache is responding"
+          echo "OK: Garage web endpoint is responding"
 
       - name: Ingest a tarball
         working-directory: test/common/container/publish-mountless
@@ -162,13 +154,17 @@ jobs:
         working-directory: test/common/container/publish-mountless
         run: |
           echo "=== Fetching .cvmfspublished after ingest ==="
-          docker compose exec -T apache \
-            curl -sf http://localhost/cvmfs/test.repo.org/.cvmfspublished
+          # Read directly from Garage's web endpoint (no Apache needed).
+          # The Docker network alias cvmfs.web.garage.localhost resolves to
+          # the Garage container and provides the correct Host header for
+          # bucket identification.
+          docker compose exec -T gateway \
+            curl -sf http://cvmfs.web.garage.localhost:3902/test.repo.org/.cvmfspublished
           echo ""
 
           echo "=== Verify manifest changed (content was published) ==="
-          published=$(docker compose exec -T apache \
-            curl -sf http://localhost/cvmfs/test.repo.org/.cvmfspublished)
+          published=$(docker compose exec -T gateway \
+            curl -sf http://cvmfs.web.garage.localhost:3902/test.repo.org/.cvmfspublished)
           echo "$published"
           # The manifest should contain a catalog hash (C line) and a root hash (R line)
           echo "$published" | grep -q "^C" || { echo "FAIL: no catalog hash in manifest"; exit 1; }
@@ -214,8 +210,8 @@ jobs:
           echo "=== gateway logs ==="
           docker compose logs gateway 2>&1 | tail -100
           echo ""
-          echo "=== apache logs ==="
-          docker compose logs apache 2>&1 | tail -50
+          echo "=== publisher logs ==="
+          docker compose logs publisher 2>&1 | tail -50
 
       - name: Tear down
         if: always()

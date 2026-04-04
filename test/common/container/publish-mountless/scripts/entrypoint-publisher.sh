@@ -28,7 +28,7 @@ GW_PORT="${GW_PORT:-4929}"
 GW_KEY_ID="${GW_KEY_ID:-mykey}"
 GW_KEY_SECRET="${GW_KEY_SECRET:-mysecret}"
 # URL advertised to CVMFS clients
-STRATUM0_URL="${STRATUM0_URL:-http://cvmfs-apache}"
+STRATUM0_URL="${STRATUM0_URL:-http://cvmfs.web.garage.localhost:3902}"
 
 KEYS_DIR="/etc/cvmfs/keys"
 GW_KEY_FILE="${KEYS_DIR}/${REPO_NAME}.gw"
@@ -65,7 +65,7 @@ if [ ! -f "${SETUP_DONE_MARKER}" ]; then
         -P \
         -K \
         -u "http://${GW_HOST}:${GW_PORT}/api/v1" \
-        -w "${STRATUM0_URL}/cvmfs/${REPO_NAME}" \
+        -w "${STRATUM0_URL}/${REPO_NAME}" \
         -o "${REPO_OWNER}" \
         "${REPO_NAME}"
     echo "[entrypoint-publisher] connect-gw -P complete."

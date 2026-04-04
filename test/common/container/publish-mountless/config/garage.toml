@@ -1,11 +1,11 @@
-# Garage S3-compatible object storage configuration
+# Garage S3-compatible object storage configuration (v2.x)
 # https://garagehq.deuxfleurs.fr/documentation/reference-manual/configuration/
 
 metadata_dir = "/var/lib/garage/meta"
 data_dir     = "/var/lib/garage/data"
 
-# Use the embedded SQLite back-end (simplest for single-node dev/test)
-db_engine = "sqlite"
+# LMDB is the recommended default for Garage v2
+db_engine = "lmdb"
 
 # Single-node: no replication
 replication_factor = 1
@@ -34,4 +34,3 @@ index       = "index.html"
 api_bind_addr = "0.0.0.0:3903"
 # Token used by setup_garage.sh to call the admin REST API
 admin_token   = "garage-admin-token"
-
