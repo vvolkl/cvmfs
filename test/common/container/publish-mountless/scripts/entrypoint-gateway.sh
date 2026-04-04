@@ -7,14 +7,15 @@
 #   1. Waits for Garage S3 to accept connections.
 #   2. Writes the per-repo S3 config file read by cvmfs_server / cvmfs_receiver.
 #   3. Writes the gateway key file for the repository.
-#   4. Runs `cvmfs_server mkfs -P` to initialise the Stratum-0 repository
-#      without mounting a FUSE publisher view.
+#   4. Runs `cvmfs_server mkfs -P -D` to initialise the Stratum-0 repository
+#      without mounting a FUSE publisher view.  -D publishes client setup
+#      (public key + mount helper script) to the storage backend.
 #   5. Writes an Apache ProxyPass snippet to the shared /apache-conf volume so
 #      the Apache container can serve the repository from Garage.
 # On every subsequent boot it skips straight to starting cvmfs_gateway.
 #
-# Publishing into this repository is done via `cvmfs_server ingest` in
-# mountless gateway mode (from this container or a separate publisher).
+# Publishing into this repository is done from a separate publisher
+# container that connects via `cvmfs_server connect-gw -P`.
 
 set -e
 
@@ -85,16 +86,17 @@ if [ ! -f "${SETUP_DONE_MARKER}" ]; then
     # -s  path to the S3 config file
     # -w  HTTP base URL from which clients download the repo (Apache frontend)
     # -o  owning user
-    echo "[entrypoint-gateway] Running cvmfs_server mkfs -P (mountless) ..."
+    echo "[entrypoint-gateway] Running cvmfs_server mkfs -P -D (mountless) ..."
     cvmfs_server mkfs \
         -P \
+        -D \
         -p \
         -f overlayfs \
         -s "${S3_CONFIG_FILE}" \
         -w "${STRATUM0_URL}/cvmfs" \
         -o "${REPO_OWNER}" \
         "${REPO_NAME}"
-    echo "[entrypoint-gateway] cvmfs_server mkfs -P complete (no FUSE mount)."
+    echo "[entrypoint-gateway] cvmfs_server mkfs -P -D complete (no FUSE mount)."
 
     # ---------------------------------------------------------------------------
     # 5. Write Apache ProxyPass config to the shared volume so the Apache

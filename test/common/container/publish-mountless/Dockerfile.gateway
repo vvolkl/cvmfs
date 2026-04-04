@@ -5,8 +5,8 @@
 # live in the same container.
 #
 # This image is designed to run WITHOUT privileged mode or systemd.
-# The gateway uses mountless mode (mkfs -P): no FUSE mount, no overlayfs.
-# Publishing is done via `cvmfs_server ingest` in mountless gateway mode.
+# The gateway uses mountless mode (mkfs -P -D): no FUSE mount, no overlayfs.
+# Publishing is done from a separate publisher container via connect-gw -P.
 #
 # Build context: repository root  (same as Dockerfile-dev)
 #   docker build -f test/common/container/publish-mountless/Dockerfile.gateway \
@@ -15,24 +15,33 @@
 # ---------------------------------------------------------------------------
 # Stage 1 – build all cvmfs RPMs from the local source tree
 # ---------------------------------------------------------------------------
-FROM gitlab-registry.cern.ch/cernvm/build-images/centos_x86_64:9 AS builder
+FROM almalinux:9 AS builder
 
 USER root
 # Workaround for sudo issue after build-image upgrade
 # (similar to https://github.com/apptainer/apptainer/issues/2756)
 RUN chmod 0400 /etc/shadow
 
-RUN dnf install -y rpm-build
-RUN echo '%sftnight ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+ENV CVMFS_EXTERNALS_PREFIX=$HOME/.cache/cvmfs_externals_install
+ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-USER sftnight
-RUN mkdir -p /home/sftnight/buildpackage /home/sftnight/cvmfs
+# Install build dependencies
+RUN dnf -y install dnf-utils && dnf config-manager --set-enabled crb && dnf install -y epel-release && dnf -y install ccache && dnf clean all
 
-COPY . /home/sftnight/cvmfs
-# Build the main cvmfs package set (includes cvmfs-server, cvmfs-gateway,
-# cvmfs-libs sub-packages from packaging/rpm/cvmfs-universal.spec)
-RUN cd /home/sftnight/cvmfs && \
-    ./ci/build_package.sh $PWD $PWD/../buildpackage/ cvmfs
+RUN mkdir -p /home/sftnight/buildpackage /home/sftnight/buildpackage_config /home/sftnight/cvmfs /tmp/packaging/rpm/ /tmp/ci
+
+COPY ./ci/build_install_builddeps.sh /tmp/ci
+COPY ./packaging/rpm/cvmfs-universal.spec /tmp/packaging/rpm
+RUN --mount=type=cache,target=/var/cache/dnf \
+    cd /tmp/ && ./ci/build_install_builddeps.sh --install
+
+RUN --mount=type=bind,source=.,target=/home/sftnight/cvmfs \
+    cd /home/sftnight/cvmfs && ./ci/build_package.sh /home/sftnight/cvmfs /home/sftnight/buildpackage_config/ cvmfs-config
+
+RUN --mount=type=bind,source=.,target=/home/sftnight/cvmfs \
+    --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/.cache/cvmfs_externals_install \
+    cd /home/sftnight/cvmfs && ./ci/build_package.sh /home/sftnight/cvmfs /home/sftnight/buildpackage/ cvmfs
 
 # ---------------------------------------------------------------------------
 # Stage 2 – minimal runtime image: gateway + receiver only (mountless)
@@ -45,32 +54,34 @@ RUN chmod 0400 /etc/shadow
 
 # Copy all built RPMs from the builder
 COPY --from=builder /home/sftnight/buildpackage/RPMS/x86_64/ /tmp/rpms/
+COPY --from=builder /home/sftnight/buildpackage_config/RPMS/noarch/ /tmp/rpms_config/
 
-# Install only the sub-packages needed to run gateway + receiver:
+# Install only the sub-packages needed to run gateway + receiver + publisher:
+#   cvmfs-config  – default configuration
 #   cvmfs-libs    – shared libraries used by both binaries
 #   cvmfs-[0-9]*  – the CVMFS client (provides /usr/bin/cvmfs2, needed by
 #                   `cvmfs_server mkfs` sanity checks even in mountless mode)
 #   cvmfs-server  – provides /usr/bin/cvmfs_receiver (and cvmfs_swissknife)
 #   cvmfs-gateway – provides /usr/bin/cvmfs_gateway
-# Pattern cvmfs-[0-9]* matches the version-numbered main package only.
 # No FUSE packages needed – mountless mode never mounts anything.
 # psmisc provides `killall` used by the gateway service unit on stop.
 RUN dnf install -y \
+        /tmp/rpms_config/cvmfs-config-*.rpm \
         /tmp/rpms/cvmfs-libs-*.rpm \
         /tmp/rpms/cvmfs-[0-9]*.rpm \
         /tmp/rpms/cvmfs-server-*.rpm \
         /tmp/rpms/cvmfs-gateway-*.rpm \
     && dnf install -y \
         attr \
+        curl \
         jq \
+        openssl \
         psmisc \
     && dnf clean all \
-    && rm -rf /tmp/rpms
+    && rm -rf /tmp/rpms /tmp/rpms_config
 
 # Pre-set capabilities on cvmfs_swissknife so that mkfs -P does not need
-# privileged mode at runtime.  The mountless path never actually exercises
-# overlayfs, but the sanity checks in ensure_swissknife_suid and
-# create_config_files still reference the union-fs type.
+# privileged mode at runtime.
 RUN setcap cap_dac_read_search,cap_sys_admin+p /usr/bin/cvmfs_swissknife 2>/dev/null || true && \
     setcap cap_dac_read_search,cap_sys_admin+p /usr/bin/cvmfs_publish    2>/dev/null || true
 
@@ -98,6 +109,7 @@ EXPOSE 4929
 
 # Copy entrypoint (sets up repo on first start, then runs cvmfs_gateway)
 COPY test/common/container/publish-mountless/scripts/entrypoint-gateway.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY test/common/container/publish-mountless/scripts/entrypoint-publisher.sh /entrypoint-publisher.sh
+RUN chmod +x /entrypoint.sh /entrypoint-publisher.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -1,31 +1,31 @@
-# docker-compose.yml – CernVM-FS mountless publishing stack (Gateway + Receiver + S3)
+# docker-compose.yml – CernVM-FS mountless publishing stack
 #
 # This stack runs entirely WITHOUT privileged mode or systemd.  The gateway
-# container uses mountless mode (mkfs -P): no FUSE mount, no overlayfs.
-# Content is published via `cvmfs_server ingest` in mountless gateway mode.
+# container uses mountless mode (mkfs -P -D): no FUSE mount, no overlayfs.
+# A separate publisher container connects via connect-gw -P and publishes
+# content via `cvmfs_server ingest` in mountless mode.
 #
 # Services
 # --------
 #   garage        – Garage S3-compatible object storage
 #   garage-setup  – one-shot init container: layout, key, bucket creation
 #   gateway       – cvmfs_gateway + cvmfs_receiver (mountless, unprivileged)
+#   publisher     – mountless publisher (connect-gw -P), runs ingest commands
 #   apache        – httpd fronting /cvmfs/<repo> via ProxyPass to Garage
 #
 # Typical workflow
 # ----------------
 #   docker compose build
 #   docker compose up -d
-#   # Wait for "gateway" to log "Starting cvmfs_gateway …"
-#   # Ingest content from the gateway container:
-#   #   docker compose exec gateway cvmfs_server ingest \
-#   #       --tar_file /path/to/content.tar --base_dir / test.repo.org
-#   # Or connect a remote publisher (mountless):
-#   #   cvmfs_server connect-gw -P -u cvmfs-gateway -K test.repo.org
-#   #   cvmfs_server ingest --tar_file content.tar --base_dir / test.repo.org
+#   # Wait for "publisher" to log "Publisher ready"
+#   # Ingest content from the publisher container:
+#   docker compose exec publisher cvmfs_server ingest \
+#       --tar_file /path/to/content.tar --base_dir / test.repo.org
 #
 # Credentials
 # -----------
 #   S3_ACCESS_KEY / S3_SECRET_KEY must match between garage-setup and gateway.
+#   GW_KEY_ID / GW_KEY_SECRET must match between gateway and publisher.
 #   The defaults below are suitable for local dev/test only.
 
 name: cvmfs-publish-mountless
@@ -37,6 +37,13 @@ x-s3-env: &s3-env
     S3_ACCESS_KEY: GKcvmfsaccesskey00000001
     S3_SECRET_KEY: cvmfs_secret_key_placeholder_32chars
     S3_BUCKET: cvmfs
+
+# ---------------------------------------------------------------------------
+# Shared environment for gateway key (keeps them in one place)
+# ---------------------------------------------------------------------------
+x-gw-key-env: &gw-key-env
+    GW_KEY_ID: mykey
+    GW_KEY_SECRET: mysecret
 
 services:
 
@@ -104,9 +111,7 @@ services:
             GARAGE_HOST: cvmfs-garage
             GARAGE_S3_PORT: "3900"
             STRATUM0_URL: http://cvmfs-apache
-            GW_KEY_ID: mykey
-            GW_KEY_SECRET: mysecret
-            <<: *s3-env
+            <<: [*gw-key-env, *s3-env]
         volumes:
             - ./config/user.json:/etc/cvmfs/gateway/user.json:ro
             - ./config/repo.json:/etc/cvmfs/gateway/repo.json:ro
@@ -117,6 +122,26 @@ services:
             - apache-conf:/apache-conf
         ports:
             - "4929:4929"   # Gateway lease API
+
+    # -----------------------------------------------------------------------
+    # Publisher (mountless – connect-gw -P, runs ingest commands)
+    # -----------------------------------------------------------------------
+    publisher:
+        image: cvmfs-gateway-mountless:latest
+        container_name: cvmfs-publisher
+        hostname: cvmfs-publisher
+        depends_on:
+            - gateway
+        entrypoint: ["/entrypoint-publisher.sh"]
+        environment:
+            REPO_NAME: test.repo.org
+            REPO_OWNER: root
+            GW_HOST: cvmfs-gateway
+            GW_PORT: "4929"
+            STRATUM0_URL: http://cvmfs-apache
+            <<: *gw-key-env
+        volumes:
+            - publisher-spool:/var/spool/cvmfs
 
     # -----------------------------------------------------------------------
     # Apache – HTTP frontend for CVMFS clients
@@ -144,4 +169,5 @@ volumes:
     etc-cvmfs-keys:
     var-spool-cvmfs:
     var-lib-gateway:
+    publisher-spool:
     apache-conf:
