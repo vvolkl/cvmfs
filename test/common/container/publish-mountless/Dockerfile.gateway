@@ -66,11 +66,8 @@ COPY --from=builder /home/sftnight/buildpackage_config/RPMS/noarch/ /tmp/rpms_co
 # No FUSE packages needed – mountless mode never mounts anything.
 # psmisc provides `killall` used by the gateway service unit on stop.
 RUN dnf install -y \
-        /tmp/rpms_config/cvmfs-config-*.rpm \
-        /tmp/rpms/cvmfs-libs-*.rpm \
-        /tmp/rpms/cvmfs-[0-9]*.rpm \
-        /tmp/rpms/cvmfs-server-*.rpm \
-        /tmp/rpms/cvmfs-gateway-*.rpm \
+        /tmp/rpms_config/*.rpm \
+        /tmp/rpms/*.rpm \
     && dnf install -y \
         attr \
         curl \
