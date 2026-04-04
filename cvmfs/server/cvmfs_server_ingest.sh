@@ -296,17 +296,16 @@ cvmfs_server_ingest() {
       if is_checked_out $name; then
         die "Mountless gateway ingest requires a mounted publisher for checked-out repositories: unpublished checkout state such as .cvmfsdirtab is not visible through backend reads."
       fi
+      # Deletion without fast-delete requires filesystem traversal of the
+      # rdonly mount (RemoveDirectoryRecursively walks the rdonly tree).
+      # In mountless mode there is no such mount, so only fast-delete is
+      # supported for removal operations.
+      if [ ! x"$to_delete" = "x" ] && [ "$fast_delete" != true ]; then
+        die "Mountless gateway ingest only supports deletion with --fast-delete (-f). Regular deletion requires the rdonly mount for filesystem traversal."
+      fi
       cvmfs_swissknife lease -u "$gateway_api_url" -a acquire \
         -k "$gw_key_file" -p "$gateway_lease_path" || \
         die "Impossible to start a transaction"
-      # Check emptiness AFTER acquiring the lease to close the TOCTOU window
-      # where a concurrent publish could complete between the check and acquire.
-      if ! is_empty_repository $name; then
-        cvmfs_server_ingest_release_gateway_lease \
-          "$name" "$gateway_api_url" "$gw_key_file" "$gateway_lease_path" \
-          >/dev/null 2>&1 || true
-        die "Mountless gateway ingest currently only supports empty gateway repositories: the ingest sync path still classifies preexisting content through the rdonly branch."
-      fi
     else
       cvmfs_server_transaction "$gateway_lease_path" || \
         die "Impossible to start a transaction"
