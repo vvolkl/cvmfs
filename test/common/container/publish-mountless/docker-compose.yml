@@ -51,7 +51,7 @@ services:
     # Garage – S3-compatible object storage
     # -----------------------------------------------------------------------
     garage:
-        image: dxfleurs/garage:v1.0.1
+        image: docker.io/dxfleurs/garage:v1.0.1
         container_name: cvmfs-garage
         hostname: cvmfs-garage
         volumes:
