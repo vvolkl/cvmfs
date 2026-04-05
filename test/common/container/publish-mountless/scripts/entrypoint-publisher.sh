@@ -28,7 +28,7 @@ GW_PORT="${GW_PORT:-4929}"
 GW_KEY_ID="${GW_KEY_ID:-mykey}"
 GW_KEY_SECRET="${GW_KEY_SECRET:-mysecret}"
 # URL advertised to CVMFS clients
-STRATUM0_URL="${STRATUM0_URL:-http://cvmfs.web.garage.localhost:3902}"
+STRATUM0_URL="${STRATUM0_URL:-http://cvmfs.web.garage.internal:3902}"
 
 KEYS_DIR="/etc/cvmfs/keys"
 GW_KEY_FILE="${KEYS_DIR}/${REPO_NAME}.gw"

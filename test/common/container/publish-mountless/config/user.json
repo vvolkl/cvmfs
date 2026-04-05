@@ -5,6 +5,7 @@
     "receiver_path": "/usr/bin/cvmfs_receiver",
     "log_level" : "info",
     "log_timestamps" : false,
-    "work_dir": "/var/lib/cvmfs-gateway"
+    "work_dir": "/var/lib/cvmfs-gateway",
+    "enable_key_endpoint": true
 }
 

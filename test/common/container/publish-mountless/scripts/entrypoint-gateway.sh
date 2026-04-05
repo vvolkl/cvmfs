@@ -32,7 +32,7 @@ S3_ACCESS_KEY="${S3_ACCESS_KEY:-GKcvmfsaccesskey00000001}"
 S3_SECRET_KEY="${S3_SECRET_KEY:-cvmfs_secret_key_placeholder_32chars}"
 # Stratum-0 URL: Garage's web endpoint, reachable via the Docker network alias
 # that matches the <bucket>.web.garage.localhost pattern.
-STRATUM0_URL="${STRATUM0_URL:-http://cvmfs.web.garage.localhost:3902}"
+STRATUM0_URL="${STRATUM0_URL:-http://cvmfs.web.garage.internal:3902}"
 # Gateway lease key written to /etc/cvmfs/keys/<repo>.gw
 GW_KEY_ID="${GW_KEY_ID:-mykey}"
 GW_KEY_SECRET="${GW_KEY_SECRET:-mysecret}"
@@ -46,11 +46,21 @@ SETUP_DONE_MARKER="/var/lib/cvmfs-gateway/.setup_done"
 # 1. Wait for Garage S3 endpoint
 # ---------------------------------------------------------------------------
 echo "[entrypoint-gateway] Waiting for Garage S3 at ${GARAGE_HOST}:${GARAGE_S3_PORT} ..."
-until curl -sf --max-time 3 "http://${GARAGE_HOST}:${GARAGE_S3_PORT}" > /dev/null 2>&1 || \
-      curl -sf --max-time 3 "http://${GARAGE_HOST}:${GARAGE_S3_PORT}/health" > /dev/null 2>&1; do
+until curl -s --max-time 3 -o /dev/null -w '%{http_code}' "http://${GARAGE_HOST}:${GARAGE_S3_PORT}" 2>/dev/null | grep -qE '^[2-4]'; do
     sleep 2
 done
 echo "[entrypoint-gateway] Garage S3 is up."
+
+# Wait for the S3 key/bucket to be ready (garage-setup may still be running).
+# Poll the Garage admin API to check that the bucket exists.
+GARAGE_ADMIN_URL="http://${GARAGE_HOST}:3903"
+GARAGE_ADMIN_TOKEN="${GARAGE_ADMIN_TOKEN:-garage-admin-token}"
+echo "[entrypoint-gateway] Waiting for S3 bucket '${S3_BUCKET}' to exist ..."
+until curl -s --max-time 3 -H "Authorization: Bearer ${GARAGE_ADMIN_TOKEN}" \
+    "${GARAGE_ADMIN_URL}/v2/ListBuckets" 2>/dev/null | grep -q "${S3_BUCKET}"; do
+    sleep 2
+done
+echo "[entrypoint-gateway] S3 bucket '${S3_BUCKET}' exists."
 
 # ---------------------------------------------------------------------------
 # 2. Write S3 config (always refresh so credential changes take effect)
@@ -65,6 +75,9 @@ CVMFS_S3_BUCKET=${S3_BUCKET}
 # Use path-style S3 URLs (required for Garage with no DNS wildcard)
 CVMFS_S3_DNS_BUCKETS=false
 CVMFS_S3_MAX_NUMBER_OF_PARALLEL_CONNECTIONS=10
+# Garage v2 only supports AWS Signature V4
+CVMFS_S3_FLAVOR=awsv4
+CVMFS_S3_REGION=garage
 EOF
 echo "[entrypoint-gateway] S3 config written to ${S3_CONFIG_FILE}."
 
