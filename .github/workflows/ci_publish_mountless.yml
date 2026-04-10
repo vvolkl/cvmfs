@@ -188,16 +188,16 @@ jobs:
         run: |
           echo "=== Fetching .cvmfspublished after ingest ==="
           # Read directly from Garage's web endpoint (no Apache needed).
-          # The Docker network alias cvmfs.web.garage.localhost resolves to
+          # The Docker network alias cvmfs.web.garage.internal resolves to
           # the Garage container and provides the correct Host header for
           # bucket identification.
           docker compose exec -T gateway \
-            curl -sf http://cvmfs.web.garage.localhost:3902/test.repo.org/.cvmfspublished
+            curl -sf http://cvmfs.web.garage.internal:3902/test.repo.org/.cvmfspublished
           echo ""
 
           echo "=== Verify manifest changed (content was published) ==="
           published=$(docker compose exec -T gateway \
-            curl -sf http://cvmfs.web.garage.localhost:3902/test.repo.org/.cvmfspublished)
+            curl -sf http://cvmfs.web.garage.internal:3902/test.repo.org/.cvmfspublished)
           echo "$published"
           # The manifest should contain a catalog hash (C line) and a root hash (R line)
           echo "$published" | grep -q "^C" || { echo "FAIL: no catalog hash in manifest"; exit 1; }
