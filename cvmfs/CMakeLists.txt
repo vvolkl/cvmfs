@@ -644,6 +644,7 @@ if (BUILD_SERVER OR BUILD_RECEIVER)
   add_library (cvmfs_server_core OBJECT ${CVMFS_SERVER_CORE_SOURCES})
   set_target_properties (cvmfs_server_core PROPERTIES
     COMPILE_FLAGS "${CVMFS_SERVER_CORE_CFLAGS}"
+    POSITION_INDEPENDENT_CODE ON
   )
   target_link_libraries (cvmfs_server_core PRIVATE nlohmann_json::nlohmann_json)
 
@@ -654,6 +655,7 @@ if (BUILD_SERVER OR BUILD_RECEIVER)
     add_library (cvmfs_server_core_debug OBJECT ${CVMFS_SERVER_CORE_SOURCES})
     set_target_properties (cvmfs_server_core_debug PROPERTIES
       COMPILE_FLAGS "${CVMFS_SERVER_CORE_CFLAGS} -O0 -DDEBUGMSG"
+      POSITION_INDEPENDENT_CODE ON
     )
     target_link_libraries (cvmfs_server_core_debug PRIVATE nlohmann_json::nlohmann_json)
   endif ()
