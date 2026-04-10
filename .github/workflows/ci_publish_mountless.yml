@@ -79,7 +79,7 @@ jobs:
           for i in $(seq 1 30); do
             if docker compose exec -T gateway \
               curl -sf -o /dev/null -w '%{http_code}' \
-                -H 'Host: cvmfs.web.garage.localhost' \
+                -H 'Host: cvmfs.web.garage.internal' \
                 http://cvmfs-garage:3902/ 2>/dev/null | grep -qE '(200|404)'; then
               echo "Garage web endpoint is responding"
               break
@@ -127,7 +127,7 @@ jobs:
           echo "=== Checking Garage web endpoint ==="
           docker compose exec -T gateway \
             curl -sf -o /dev/null -w 'HTTP %{http_code}' \
-              http://cvmfs.web.garage.localhost:3902/
+              http://cvmfs.web.garage.internal:3902/
           echo ""
           echo "OK: Garage web endpoint is responding"
 
