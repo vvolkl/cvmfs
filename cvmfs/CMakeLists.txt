@@ -645,6 +645,7 @@ if (BUILD_SERVER OR BUILD_RECEIVER)
   set_target_properties (cvmfs_server_core PROPERTIES
     COMPILE_FLAGS "${CVMFS_SERVER_CORE_CFLAGS}"
   )
+  target_link_libraries (cvmfs_server_core PRIVATE nlohmann_json::nlohmann_json)
 
   if (BUILD_SERVER_DEBUG OR BUILD_RECEIVER_DEBUG)
     #
@@ -654,6 +655,7 @@ if (BUILD_SERVER OR BUILD_RECEIVER)
     set_target_properties (cvmfs_server_core_debug PROPERTIES
       COMPILE_FLAGS "${CVMFS_SERVER_CORE_CFLAGS} -O0 -DDEBUGMSG"
     )
+    target_link_libraries (cvmfs_server_core_debug PRIVATE nlohmann_json::nlohmann_json)
   endif ()
 endif ()
 
@@ -665,12 +667,14 @@ if (BUILD_SERVER)
   #
   add_library (cvmfs_swissknife_core OBJECT ${CVMFS_SERVER_CORE_SOURCES})
   # No extra COMPILE_FLAGS: swissknife uses the default cmake flags.
+  target_link_libraries (cvmfs_swissknife_core PRIVATE nlohmann_json::nlohmann_json)
 
   if (BUILD_SERVER_DEBUG)
     add_library (cvmfs_swissknife_core_debug OBJECT ${CVMFS_SERVER_CORE_SOURCES})
     set_target_properties (cvmfs_swissknife_core_debug PROPERTIES
       COMPILE_FLAGS "-O0 -DDEBUGMSG"
     )
+    target_link_libraries (cvmfs_swissknife_core_debug PRIVATE nlohmann_json::nlohmann_json)
   endif ()
 endif ()
 
