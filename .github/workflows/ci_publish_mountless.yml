@@ -87,6 +87,15 @@ jobs:
             sleep 1
           done
 
+          echo "Waiting for publisher to become ready ..."
+          for i in $(seq 1 120); do
+            if docker compose logs publisher 2>&1 | grep -q "Publisher ready"; then
+              echo "Publisher is ready (after ${i}s)"
+              break
+            fi
+            sleep 1
+          done
+
       - name: Verify stack is running (no privileged)
         working-directory: test/common/container/publish-mountless
         run: |
@@ -136,8 +145,8 @@ jobs:
       - name: Ingest a tarball
         working-directory: test/common/container/publish-mountless
         run: |
-          echo "=== Creating test tarball inside gateway container ==="
-          docker compose exec -T gateway bash -c '
+          echo "=== Creating test tarball inside publisher container ==="
+          docker compose exec -T publisher bash -c '
             set -e
             mkdir -p /tmp/test-content/subdir
             echo "hello from mountless ingest" > /tmp/test-content/hello.txt
@@ -150,7 +159,7 @@ jobs:
 
           echo ""
           echo "=== Running cvmfs_server ingest ==="
-          docker compose exec -T gateway \
+          docker compose exec -T publisher \
             cvmfs_server ingest \
               --tar_file /tmp/test-content.tar \
               --base_dir / \
@@ -163,12 +172,12 @@ jobs:
         working-directory: test/common/container/publish-mountless
         run: |
           echo "=== Running cvmfs_server check ==="
-          docker compose exec -T gateway \
+          docker compose exec -T publisher \
             cvmfs_server check -i test.repo.org
 
           echo ""
           echo "=== Listing catalogs ==="
-          docker compose exec -T gateway \
+          docker compose exec -T publisher \
             cvmfs_server list-catalogs -x test.repo.org
 
           echo ""
@@ -199,7 +208,7 @@ jobs:
         working-directory: test/common/container/publish-mountless
         run: |
           echo "=== Creating a second tarball ==="
-          docker compose exec -T gateway bash -c '
+          docker compose exec -T publisher bash -c '
             set -e
             mkdir -p /tmp/second-content
             echo "second ingest" > /tmp/second-content/second.txt
@@ -208,7 +217,7 @@ jobs:
 
           echo ""
           echo "=== Attempting second mountless ingest (should fail on non-empty repo) ==="
-          if docker compose exec -T gateway \
+          if docker compose exec -T publisher \
             cvmfs_server ingest \
               --tar_file /tmp/second-content.tar \
               --base_dir /other \
