@@ -562,21 +562,14 @@ cvmfs_server_ingest() {
 
   if [ x"$upstream_type" = xgw ]; then
       # TODO(jpriessn): implement publication counters upload to gateway
-      if [ $mountless_gateway_ingest -eq 1 ]; then
-        cvmfs_server_ingest_release_gateway_lease \
-          "$name" "$gateway_api_url" "$gw_key_file" "$gateway_lease_path" || {
-          # Lease drop failed; clean up the publishing lock and log but do NOT
-          # attempt a second lease release (publish_failed_mountless would
-          # redundantly retry the same drop that just failed).
-          trap - EXIT HUP INT TERM
-          load_repo_config $name
-          release_lock "${CVMFS_SPOOL_DIR}/is_publishing"
-          to_syslog_for_repo $name "failed to publish"
-          die "Failed to release gateway lease"
-        }
-      else
+      if [ $mountless_gateway_ingest -ne 1 ]; then
         close_transaction  $name $use_fd_fallback
       fi
+      # For mountless gateway ingest the gateway lease was already committed
+      # (and deleted server-side) by cvmfs_swissknife ingest via
+      # FinalizeSession(true).  No separate DROP/cancel request is needed here;
+      # publish_succeeded handles the remaining local cleanup (lock, syslog,
+      # EXIT trap).
       publish_after_hook $name
       publish_succeeded $name
       echo "Changes submitted to repository gateway"
