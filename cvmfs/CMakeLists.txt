@@ -559,6 +559,127 @@ if (NOT BUILD_SERVER)
   endif ()
 endif ()
 
+
+
+
+# ---------------------------------------------------------------------------
+# Sources shared verbatim by cvmfs_server, cvmfs_receiver, and
+# cvmfs_swissknife.  Compiled once into OBJECT libraries so that an
+# incremental rebuild caused by a single changed file only re-compiles that
+# translation unit once, not once per consuming target.
+#
+# cvmfs_server and cvmfs_receiver use identical compile flags
+# (-DCVMFS_RAISE_EXCEPTIONS -fexceptions) so they share one OBJECT library
+# (and a paired _debug variant).  cvmfs_swissknife uses different flags; it
+# gets a separate pair.
+# ---------------------------------------------------------------------------
+
+set (CVMFS_SERVER_CORE_SOURCES
+     backoff.cc
+     catalog.cc
+     catalog_counters.cc
+     catalog_downloader.cc
+     catalog_mgr_ro.cc
+     catalog_mgr_rw.cc
+     catalog_rw.cc
+     catalog_sql.cc
+     compression/compression.cc
+     directory_entry.cc
+     gateway_util.cc
+     globals.cc
+     history_sql.cc
+     history_sqlite.cc
+     ingestion/chunk_detector.cc
+     ingestion/item.cc
+     ingestion/item_mem.cc
+     ingestion/pipeline.cc
+     ingestion/task_chunk.cc
+     ingestion/task_compress.cc
+     ingestion/task_hash.cc
+     ingestion/task_read.cc
+     ingestion/task_register.cc
+     ingestion/task_write.cc
+     json_document.cc
+     malloc_arena.cc
+     manifest.cc
+     manifest_fetch.cc
+     network/dns.cc
+     network/download.cc
+     network/jobinfo.cc
+     network/s3fanout.cc
+     network/sink_file.cc
+     network/sink_mem.cc
+     network/sink_path.cc
+     options.cc
+     pack.cc
+     reflog.cc
+     reflog_sql.cc
+     sanitizer.cc
+     session_context.cc
+     shortstring.cc
+     sql.cc
+     sqlitemem.cc
+     ssl.cc
+     statistics.cc
+     swissknife_lease_curl.cc
+     sync_item.cc
+     upload.cc
+     upload_facility.cc
+     upload_gateway.cc
+     upload_gateway_s3.cc
+     upload_local.cc
+     upload_s3.cc
+     upload_spooler_definition.cc
+     whitelist.cc
+     xattr.cc
+)  # CVMFS_SERVER_CORE_SOURCES
+
+set (CVMFS_SERVER_CORE_CFLAGS
+     "-D_FILE_OFFSET_BITS=64 -DCVMFS_RAISE_EXCEPTIONS -fexceptions")
+
+if (BUILD_SERVER OR BUILD_RECEIVER)
+  #
+  # Release OBJECT library: shared by cvmfs_server and cvmfs_receiver
+  #
+  add_library (cvmfs_server_core OBJECT ${CVMFS_SERVER_CORE_SOURCES})
+  set_target_properties (cvmfs_server_core PROPERTIES
+    COMPILE_FLAGS "${CVMFS_SERVER_CORE_CFLAGS}"
+    POSITION_INDEPENDENT_CODE ON
+  )
+  target_link_libraries (cvmfs_server_core PRIVATE nlohmann_json::nlohmann_json)
+
+  if (BUILD_SERVER_DEBUG OR BUILD_RECEIVER_DEBUG)
+    #
+    # Debug OBJECT library: shared by cvmfs_server_debug and cvmfs_receiver_debug
+    #
+    add_library (cvmfs_server_core_debug OBJECT ${CVMFS_SERVER_CORE_SOURCES})
+    set_target_properties (cvmfs_server_core_debug PROPERTIES
+      COMPILE_FLAGS "${CVMFS_SERVER_CORE_CFLAGS} -O0 -DDEBUGMSG"
+      POSITION_INDEPENDENT_CODE ON
+    )
+    target_link_libraries (cvmfs_server_core_debug PRIVATE nlohmann_json::nlohmann_json)
+  endif ()
+endif ()
+
+if (BUILD_SERVER)
+  #
+  # Release OBJECT library for sources shared between cvmfs_swissknife and
+  # cvmfs_swissknife_debug.  cvmfs_swissknife does not use RAISE_EXCEPTIONS so
+  # it cannot reuse cvmfs_server_core.
+  #
+  add_library (cvmfs_swissknife_core OBJECT ${CVMFS_SERVER_CORE_SOURCES})
+  # No extra COMPILE_FLAGS: swissknife uses the default cmake flags.
+  target_link_libraries (cvmfs_swissknife_core PRIVATE nlohmann_json::nlohmann_json)
+
+  if (BUILD_SERVER_DEBUG)
+    add_library (cvmfs_swissknife_core_debug OBJECT ${CVMFS_SERVER_CORE_SOURCES})
+    set_target_properties (cvmfs_swissknife_core_debug PROPERTIES
+      COMPILE_FLAGS "-O0 -DDEBUGMSG"
+    )
+    target_link_libraries (cvmfs_swissknife_core_debug PRIVATE nlohmann_json::nlohmann_json)
+  endif ()
+endif ()
+
 if (BUILD_SERVER)
   #
   # /usr/bin/cvmfs_suid_helper
@@ -585,48 +706,17 @@ if (BUILD_SERVER)
   #
   # /usr/bin/cvmfs_swissknife[_debug]
   #
-  set (CVMFS_SWISSKNIFE_SOURCES
+  # Sources that are unique to the swissknife (not part of cvmfs_swissknife_core).
+  # The 57 files shared with cvmfs_server / cvmfs_receiver come in via the
+  # cvmfs_swissknife_core[_debug] OBJECT libraries defined above.
+  #
+  set (CVMFS_SWISSKNIFE_UNIQUE_SOURCES
        acl.cc
-       backoff.cc
-       catalog.cc
-       catalog_counters.cc
-       catalog_downloader.cc
-       catalog_mgr_ro.cc
-       catalog_mgr_rw.cc
-       catalog_sql.cc
-       catalog_rw.cc
        catalog_virtual.cc
        clientctx.cc
-       compression/compression.cc
-       directory_entry.cc
        file_chunk.cc
-       gateway_util.cc
-       globals.cc
-       history_sql.cc
-       history_sqlite.cc
-       ingestion/chunk_detector.cc
-       ingestion/item.cc
-       ingestion/item_mem.cc
-       ingestion/pipeline.cc
-       ingestion/task_chunk.cc
-       ingestion/task_compress.cc
-       ingestion/task_hash.cc
-       ingestion/task_read.cc
-       ingestion/task_register.cc
-       ingestion/task_write.cc
-       json_document.cc
        letter.cc
-       malloc_arena.cc
-       manifest.cc
-       manifest_fetch.cc
        monitor.cc
-       network/dns.cc
-       network/download.cc
-       network/jobinfo.cc
-       network/s3fanout.cc
-       network/sink_file.cc
-       network/sink_mem.cc
-       network/sink_path.cc
        notify/cmd_pub.cc
        notify/cmd_sub.cc
        notify/messages.cc
@@ -634,25 +724,14 @@ if (BUILD_SERVER)
        notify/publisher_http.cc
        notify/subscriber_supervisor.cc
        notify/subscriber_sse.cc
-       options.cc
-       pack.cc
        path_filters/dirtab.cc
        path_filters/relaxed_path_filter.cc
        pathspec/pathspec.cc
        pathspec/pathspec_pattern.cc
-       reflog.cc
-       reflog_sql.cc
        repository_tag.cc
-       sanitizer.cc
        server_tool.cc
-       session_context.cc
        signing_tool.cc
-       shortstring.cc
-       sql.cc
-       sqlitemem.cc
-       ssl.cc
        statistics_database.cc
-       statistics.cc
        supervisor.cc
        swissknife.cc
        swissknife_assistant.cc
@@ -664,7 +743,6 @@ if (BUILD_SERVER)
        swissknife_ingest.cc
        swissknife_ingestsql.cc
        swissknife_lease.cc
-       swissknife_lease_curl.cc
        swissknife_lease_json.cc
        swissknife_letter.cc
        swissknife_list_reflog.cc
@@ -681,7 +759,6 @@ if (BUILD_SERVER)
        swissknife_sign.cc
        swissknife_sync.cc
        swissknife_zpipe.cc
-       sync_item.cc
        sync_item_dummy.cc
        sync_item_tar.cc
        sync_mediator.cc
@@ -689,16 +766,8 @@ if (BUILD_SERVER)
        sync_union_aufs.cc
        sync_union_overlayfs.cc
        sync_union_tarball.cc
-       upload.cc
-       upload_facility.cc
-       upload_gateway.cc
-       upload_local.cc
-       upload_s3.cc
-       upload_spooler_definition.cc
        url.cc
-       whitelist.cc
-       xattr.cc
-  )  # CVMFS_SWISSKNIFE_SOURCES
+  )  # CVMFS_SWISSKNIFE_UNIQUE_SOURCES
   set (CVMFS_SWISSKNIFE_LINK_LIBRARIES "")
   list (APPEND CVMFS_SWISSKNIFE_LINK_LIBRARIES
         ${SQLITE3_LIBRARY}
@@ -712,14 +781,20 @@ if (BUILD_SERVER)
         pthread
         dl
   )
-  add_executable (cvmfs_swissknife ${CVMFS_SWISSKNIFE_SOURCES})
+  add_executable (cvmfs_swissknife
+                  $<TARGET_OBJECTS:cvmfs_swissknife_core>
+                  ${CVMFS_SWISSKNIFE_UNIQUE_SOURCES}
+  )
   target_link_libraries (cvmfs_swissknife
                          cvmfs_crypto
                          cvmfs_util
                          ${CVMFS_SWISSKNIFE_LINK_LIBRARIES}
   )
   if (BUILD_SERVER_DEBUG)
-    add_executable (cvmfs_swissknife_debug ${CVMFS_SWISSKNIFE_SOURCES})
+    add_executable (cvmfs_swissknife_debug
+                    $<TARGET_OBJECTS:cvmfs_swissknife_core_debug>
+                    ${CVMFS_SWISSKNIFE_UNIQUE_SOURCES}
+    )
     set_target_properties (cvmfs_swissknife_debug PROPERTIES
       COMPILE_FLAGS "-O0 -DDEBUGMSG"
     )
@@ -734,45 +809,11 @@ if (BUILD_SERVER)
   #
   # /usr/lib64/libcvmfs_server[_debug].so
   #
-  set (LIBCVMFS_SERVER_SOURCES
-       backoff.cc
-       catalog.cc
-       catalog_counters.cc
-       catalog_rw.cc
-       catalog_sql.cc
-       catalog_mgr_ro.cc
-       catalog_mgr_rw.cc
+  # Sources unique to libcvmfs_server (not in cvmfs_server_core OBJECT library).
+  # The 57 core files come in via $<TARGET_OBJECTS:cvmfs_server_core[_debug]>.
+  #
+  set (LIBCVMFS_SERVER_UNIQUE_SOURCES
        catalog_virtual.cc
-       catalog_downloader.cc
-       compression/compression.cc
-       directory_entry.cc
-       gateway_util.cc
-       globals.cc
-       history_sql.cc
-       history_sqlite.cc
-       ingestion/chunk_detector.cc
-       ingestion/item.cc
-       ingestion/item_mem.cc
-       ingestion/pipeline.cc
-       ingestion/task_chunk.cc
-       ingestion/task_compress.cc
-       ingestion/task_hash.cc
-       ingestion/task_read.cc
-       ingestion/task_register.cc
-       ingestion/task_write.cc
-       json_document.cc
-       manifest.cc
-       manifest_fetch.cc
-       malloc_arena.cc
-       network/dns.cc
-       network/download.cc
-       network/jobinfo.cc
-       network/s3fanout.cc
-       network/sink_file.cc
-       network/sink_mem.cc
-       network/sink_path.cc
-       options.cc
-       pack.cc
        publish/except.cc
        publish/repository.cc
        publish/repository_abort.cc
@@ -784,18 +825,7 @@ if (BUILD_SERVER)
        publish/repository_transaction.cc
        publish/repository_util.cc
        publish/settings.cc
-       reflog.cc
-       reflog_sql.cc
-       sanitizer.cc
-       session_context.cc
-       shortstring.cc
-       sql.cc
-       sqlitemem.cc
-       ssl.cc
-       statistics.cc
        swissknife_assistant.cc
-       swissknife_lease_curl.cc
-       sync_item.cc
        sync_item_dummy.cc
        sync_item_tar.cc
        sync_mediator.cc
@@ -803,15 +833,7 @@ if (BUILD_SERVER)
        sync_union_aufs.cc
        sync_union_overlayfs.cc
        sync_union_tarball.cc
-       upload.cc
-       upload_facility.cc
-       upload_gateway.cc
-       upload_local.cc
-       upload_s3.cc
-       upload_spooler_definition.cc
-       whitelist.cc
-       xattr.cc
-  )
+  )  # LIBCVMFS_SERVER_UNIQUE_SOURCES
   set (LIBCVMFS_SERVER_CFLAGS "-D_FILE_OFFSET_BITS=64 -DCVMFS_RAISE_EXCEPTIONS -fexceptions")
   set (LIBCVMFS_SERVER_LINK_LIBRARIES "")
   list (APPEND LIBCVMFS_SERVER_LINK_LIBRARIES
@@ -826,7 +848,10 @@ if (BUILD_SERVER)
         pthread
         dl
   )
-  add_library (cvmfs_server SHARED ${LIBCVMFS_SERVER_SOURCES})
+  add_library (cvmfs_server SHARED
+               $<TARGET_OBJECTS:cvmfs_server_core>
+               ${LIBCVMFS_SERVER_UNIQUE_SOURCES}
+  )
   set_target_properties (cvmfs_server PROPERTIES
     VERSION ${CernVM-FS_VERSION_STRING}
     COMPILE_FLAGS "${LIBCVMFS_SERVER_CFLAGS}")
@@ -836,7 +861,10 @@ if (BUILD_SERVER)
                          ${LIBCVMFS_SERVER_LINK_LIBRARIES}
   )
   if (BUILD_SERVER_DEBUG)
-    add_library (cvmfs_server_debug SHARED ${LIBCVMFS_SERVER_SOURCES})
+    add_library (cvmfs_server_debug SHARED
+                 $<TARGET_OBJECTS:cvmfs_server_core_debug>
+                 ${LIBCVMFS_SERVER_UNIQUE_SOURCES}
+    )
     set_target_properties (cvmfs_server_debug PROPERTIES
       VERSION ${CernVM-FS_VERSION_STRING}
       COMPILE_FLAGS "${LIBCVMFS_SERVER_CFLAGS} -O0 -DDEBUGMSG")
@@ -1028,77 +1056,24 @@ if (NOT BUILD_RECEIVER)
 endif ()
 
 if(BUILD_RECEIVER)
-  set (CVMFS_RECEIVER_SOURCES
+  # Sources unique to cvmfs_receiver (not in cvmfs_server_core OBJECT library).
+  # The 57 core files shared with cvmfs_server come via
+  # $<TARGET_OBJECTS:cvmfs_server_core[_debug]>.
+  set (CVMFS_RECEIVER_UNIQUE_SOURCES
        receiver/commit_processor.cc
        receiver/params.cc
        receiver/payload_processor.cc
        receiver/reactor.cc
        receiver/receiver.cc
        receiver/session_token.cc
-       backoff.cc
-       catalog_downloader.cc
-       catalog.cc
-       catalog_rw.cc
-       catalog_counters.cc
-       catalog_sql.cc
-       catalog_mgr_ro.cc
-       catalog_mgr_rw.cc
-       compression/compression.cc
-       directory_entry.cc
-       gateway_util.cc
-       globals.cc
-       history_sql.cc
-       history_sqlite.cc
-       ingestion/chunk_detector.cc
-       ingestion/item.cc
-       ingestion/item_mem.cc
-       ingestion/pipeline.cc
-       ingestion/task_chunk.cc
-       ingestion/task_compress.cc
-       ingestion/task_hash.cc
-       ingestion/task_read.cc
-       ingestion/task_register.cc
-       ingestion/task_write.cc
-       json_document.cc
-       malloc_arena.cc
-       manifest.cc
-       manifest_fetch.cc
        monitor.cc
-       network/dns.cc
-       network/download.cc
-       network/jobinfo.cc
-       network/s3fanout.cc
-       network/sink_file.cc
-       network/sink_mem.cc
-       network/sink_path.cc
-       options.cc
-       pack.cc
-       reflog.cc
-       reflog_sql.cc
        repository_tag.cc
-       sanitizer.cc
        server_tool.cc
-       session_context.cc
        signing_tool.cc
-       shortstring.cc
-       ssl.cc
-       statistics.cc
        statistics_database.cc
        swissknife.cc
        swissknife_history.cc
-       swissknife_lease_curl.cc
-       sql.cc
-       sqlitemem.cc
-       sync_item.cc
-       upload.cc
-       upload_facility.cc
-       upload_gateway.cc
-       upload_local.cc
-       upload_s3.cc
-       upload_spooler_definition.cc
-       whitelist.cc
-       xattr.cc
-  )  # CVMFS_RECEIVER_SOURCES
+  )  # CVMFS_RECEIVER_UNIQUE_SOURCES
   set (CVMFS_RECEIVER_CFLAGS "-D_FILE_OFFSET_BITS=64 -DCVMFS_RAISE_EXCEPTIONS -fexceptions")
   set (CVMFS_RECEIVER_LINK_LIBRARIES "")
   list (APPEND CVMFS_RECEIVER_LINK_LIBRARIES
@@ -1113,7 +1088,10 @@ if(BUILD_RECEIVER)
         pthread
         dl
   )
-  add_executable(cvmfs_receiver ${CVMFS_RECEIVER_SOURCES})
+  add_executable(cvmfs_receiver
+                 $<TARGET_OBJECTS:cvmfs_server_core>
+                 ${CVMFS_RECEIVER_UNIQUE_SOURCES}
+  )
   set_target_properties (cvmfs_receiver PROPERTIES
     COMPILE_FLAGS "${CVMFS_RECEIVER_CFLAGS}"
   )
@@ -1124,7 +1102,10 @@ if(BUILD_RECEIVER)
   )
 
   if (BUILD_RECEIVER_DEBUG)
-    add_executable(cvmfs_receiver_debug ${CVMFS_RECEIVER_SOURCES})
+    add_executable(cvmfs_receiver_debug
+                   $<TARGET_OBJECTS:cvmfs_server_core_debug>
+                   ${CVMFS_RECEIVER_UNIQUE_SOURCES}
+    )
     set_target_properties (cvmfs_receiver_debug PROPERTIES
       COMPILE_FLAGS "${CVMFS_RECEIVER_CFLAGS} -O0 -DDEBUGMSG")
     target_link_libraries(cvmfs_receiver_debug
@@ -1252,6 +1233,7 @@ if (BUILD_PRELOADER)
                   upload.cc
                   upload_facility.cc
                   upload_gateway.cc
+                  upload_gateway_s3.cc
                   upload_local.cc
                   upload_s3.cc
                   upload_spooler_definition.cc
