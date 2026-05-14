@@ -2440,6 +2440,20 @@ static bool NeedsReadEnviron() {
 }
 
 
+static string GetWatchdogOomScoreAdj() {
+#ifdef __APPLE__
+  return "";
+#else
+  string oom_score_adj;
+  if (cvmfs::options_mgr_->GetValue("CVMFS_OOM_SCORE_WATCHDOG",
+                                    &oom_score_adj)) {
+    return oom_score_adj;
+  }
+  return "";
+#endif
+}
+
+
 static int Init(const loader::LoaderExports *loader_exports) {
   g_boot_error = new string("unknown error");
   cvmfs::loader_exports_ = loader_exports;
@@ -2457,7 +2471,9 @@ static int Init(const loader::LoaderExports *loader_exports) {
   if (cvmfs::ShouldStartWatchdog()) {
     auto_umount::SetMountpoint(loader_exports->mount_point);
     cvmfs::watchdog_ = Watchdog::Create(auto_umount::UmountOnExit,
-                                        NeedsReadEnviron());
+                                        NeedsReadEnviron(),
+                                        NULL,
+                                        GetWatchdogOomScoreAdj());
     if (cvmfs::watchdog_ == NULL) {
       *g_boot_error = "failed to initialize watchdog.";
       return loader::kFailMonitor;
@@ -3116,7 +3132,8 @@ static bool RestoreState(const int fd_progress,
           saved_states[i]->state);
       cvmfs::watchdog_ = Watchdog::Create(auto_umount::UmountOnExit,
                                           NeedsReadEnviron(),
-                                          watchdog_state);
+                                          watchdog_state,
+                                          GetWatchdogOomScoreAdj());
       assert(cvmfs::watchdog_ != NULL);
       SendMsg2Socket(fd_progress, " done\n");
     }

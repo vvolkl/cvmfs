@@ -66,9 +66,10 @@ int Watchdog::g_crash_signals[] = {SIGQUIT, SIGILL, SIGABRT, SIGFPE,
 
 Watchdog *Watchdog::Create(FnOnExit on_exit,
                            bool needs_read_environ,
-                           WatchdogState *saved_state) {
+                           WatchdogState *saved_state,
+                           const std::string &oom_score_adj) {
   assert(instance_ == NULL);
-  instance_ = new Watchdog(on_exit);
+  instance_ = new Watchdog(on_exit, oom_score_adj);
   if (saved_state != NULL)
     instance_->RestoreState(saved_state);
   else
@@ -408,6 +409,15 @@ void Watchdog::Fork(bool needs_read_environ) {
         case 0: {
           pipe_watchdog_->CloseWriteFd();
           Daemonize();
+#ifndef __APPLE__
+          if (!oom_score_adj_.empty() &&
+              !SafeWriteToFile(oom_score_adj_, "/proc/self/oom_score_adj",
+                               0644)) {
+            LogCvmfs(kLogMonitor, kLogDebug | kLogSyslogWarn,
+                     "watchdog: failed to set oom_score_adj to %s",
+                     oom_score_adj_.c_str());
+          }
+#endif
           if ((geteuid() != 0) && SetuidCapabilityPermitted()) {
             const std::vector<cap_value_t> nocaps;
             if (on_exit_) {
@@ -703,10 +713,11 @@ void Watchdog::RestoreState(WatchdogState *saved_state) {
 }
 
 
-Watchdog::Watchdog(FnOnExit on_exit)
+Watchdog::Watchdog(FnOnExit on_exit, const std::string &oom_score_adj)
     : spawned_(false)
     , maintenance_mode_(false)
     , exe_path_(string(platform_getexepath()))
+    , oom_score_adj_(oom_score_adj)
     , watchdog_pid_(0)
     , on_exit_(on_exit)
 {
