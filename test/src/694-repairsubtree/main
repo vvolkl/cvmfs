@@ -1,0 +1,199 @@
+#!/bin/bash
+
+cvmfs_test_name="Repair a Catalog Subtree"
+cvmfs_test_autofs_on_startup=false
+
+produce_files_in() {
+  local working_dir=$1
+
+  pushdir $working_dir
+
+  mkdir -p foo
+  mkdir -p foo/1
+  mkdir -p foo/2
+  mkdir -p foo/2/hallo
+  mkdir -p foo/3
+  mkdir -p bar
+  mkdir -p baz
+
+  echo "foobar" > foo/3/foobar
+  echo "content" > foo/2/file
+  ln -s file foo/2/symlink
+
+  # split foo and foo/2 into their own nested catalogs
+  echo "/*"      >  .cvmfsdirtab
+  echo "/foo/*"  >> .cvmfsdirtab
+
+  create_big_file foo/2/muh 50
+
+  popdir
+}
+
+cvmfs_run_test() {
+  logfile=$1
+  local repo_dir=/cvmfs/$CVMFS_TEST_REPO
+  local scratch_dir=$(pwd)
+
+  echo "create a fresh repository named $CVMFS_TEST_REPO with user $CVMFS_TEST_USER"
+  create_empty_repo $CVMFS_TEST_REPO $CVMFS_TEST_USER || return $?
+
+  echo "starting transaction to edit repository"
+  start_transaction $CVMFS_TEST_REPO || return $?
+
+  echo "putting some stuff in the new repository"
+  produce_files_in $repo_dir || return 3
+
+  echo "creating CVMFS snapshot"
+  publish_repo $CVMFS_TEST_REPO || return $?
+
+  echo "check catalog and data integrity (must be clean)"
+  check_repository $CVMFS_TEST_REPO -i || return 4
+
+  local root_hash_before
+  root_hash_before=$(get_current_root_catalog $CVMFS_TEST_REPO)
+
+  # Dry-run repair must not republish.
+  local repair_log_1="repair_dryrun.log"
+  echo "dry-run repair of subtree /foo - logging to $repair_log_1"
+  check_repository $CVMFS_TEST_REPO -y -p /foo > $repair_log_1 2>&1 || return 10
+  cat $repair_log_1
+
+  local root_hash_after_dry
+  root_hash_after_dry=$(get_current_root_catalog $CVMFS_TEST_REPO)
+  echo "verify dry-run did not republish"
+  [ "x$root_hash_before" = "x$root_hash_after_dry" ] || return 11
+
+  # A healthy subtree is a no-op.
+  local repair_log_2="repair_noop.log"
+  echo "repair healthy subtree /foo - logging to $repair_log_2"
+  check_repository $CVMFS_TEST_REPO -p /foo > $repair_log_2 2>&1 || return 12
+  cat $repair_log_2
+  cat $repair_log_2 | grep -e "No repair was necessary" || return 13
+
+  local root_hash_after_noop
+  root_hash_after_noop=$(get_current_root_catalog $CVMFS_TEST_REPO)
+  echo "verify no-op repair did not republish"
+  [ "x$root_hash_before" = "x$root_hash_after_noop" ] || return 14
+
+  # The healthy root is also a no-op.
+  local repair_log_3="repair_root.log"
+  echo "repair whole tree - logging to $repair_log_3"
+  check_repository $CVMFS_TEST_REPO -p / > $repair_log_3 2>&1 || return 15
+  cat $repair_log_3 | grep -e "No repair was necessary" || return 16
+
+  # Unknown subtrees fail cleanly.
+  local repair_log_4="repair_badsubtree.log"
+  echo "repair non-existent subtree - logging to $repair_log_4"
+  check_repository $CVMFS_TEST_REPO -p /does/not/exist > $repair_log_4 2>&1 && return 17
+  cat $repair_log_4 | grep -e "was not found" || return 18
+
+  # Forge a validly addressed catalog with corrupt /foo statistics.
+  echo -n "checking for sqlite3 utility... "
+  which sqlite3 > /dev/null 2>&1 && echo "done" || { echo "not found"; return 20; }
+
+  echo "verify /foo is clean before corruption"
+  check_repository $CVMFS_TEST_REPO -s /foo || return 21
+
+  load_repo_config $CVMFS_TEST_REPO
+  local manifest_txt="$(curl -s $(get_repo_url $CVMFS_TEST_REPO)/.cvmfspublished)"
+  local old_root_hash="$(echo "$manifest_txt" | get_manifest_field_from_manifest C)"
+  local old_revision="$(echo "$manifest_txt" | get_manifest_field_from_manifest S)"
+  [ "x$old_root_hash" != "x" ] || return 22
+
+  local root_object="$(get_local_repo_object $CVMFS_TEST_REPO ${old_root_hash}C)"
+  local root_db="${scratch_dir}/root.db"
+  cvmfs_swissknife zpipe -d < $root_object > $root_db || return 23
+
+  local foo_hash="$(sqlite3 $root_db "SELECT sha1 FROM nested_catalogs WHERE path='/foo';")"
+  [ "x$foo_hash" != "x" ] || return 24
+  local foo_object="$(get_local_repo_object $CVMFS_TEST_REPO ${foo_hash}C)"
+  [ -f "$foo_object" ] || return 25
+
+  echo "corrupting statistics counters of nested catalog /foo"
+  local foo_plain="${scratch_dir}/foo_plain.db"
+  cvmfs_swissknife zpipe -d < $foo_object > $foo_plain || return 26
+  sqlite3 $foo_plain \
+    "UPDATE statistics SET value = value + 1 WHERE counter = 'self_regular';" \
+    || return 27
+
+  # Store the corrupted catalog as a new object.
+  local foo_corrupt="${scratch_dir}/foo_corrupt.datac"
+  cvmfs_swissknife zpipe < $foo_plain > $foo_corrupt || return 28
+  local new_foo_hash="$(cvmfs_publish hash -a sha1 < $foo_corrupt)"
+  local new_foo_size="$(stat -c %s $foo_plain 2>/dev/null || stat -f %z $foo_plain)"
+  local new_foo_object="$(get_local_repo_object $CVMFS_TEST_REPO ${new_foo_hash}C)"
+  sudo mkdir -p $(dirname $new_foo_object)
+  sudo cp $foo_corrupt $new_foo_object
+  sudo chown $CVMFS_USER $new_foo_object
+
+  # Point the root catalog at the corrupted object.
+  sqlite3 $root_db \
+    "UPDATE nested_catalogs SET sha1='$new_foo_hash', size=$new_foo_size WHERE path='/foo';" \
+    || return 29
+  local root_corrupt="${scratch_dir}/root_corrupt.datac"
+  cvmfs_swissknife zpipe < $root_db > $root_corrupt || return 30
+  local new_root_hash="$(cvmfs_publish hash -a sha1 < $root_corrupt)"
+  local new_root_size="$(stat -c %s $root_db 2>/dev/null || stat -f %z $root_db)"
+  local new_root_object="$(get_local_repo_object $CVMFS_TEST_REPO ${new_root_hash}C)"
+  sudo mkdir -p $(dirname $new_root_object)
+  sudo cp $root_corrupt $new_root_object
+  sudo chown $CVMFS_USER $new_root_object
+
+  # Sign a manifest for the corrupted root catalog.
+  local forged_manifest="${CVMFS_SPOOL_DIR}/tmp/forged_manifest"
+  echo "$manifest_txt" | awk -v h="$new_root_hash" -v s="$new_root_size" \
+                             -v r="$(( old_revision + 1 ))" '
+    /^C/  { print "C" h; next }
+    /^B/  { print "B" s; next }
+    /^S/  { print "S" r; next }
+    /^--$/ { exit }
+    { print }
+  ' | sudo tee $forged_manifest > /dev/null
+  sudo chown $CVMFS_USER $forged_manifest
+
+  cvmfs_swissknife sign                       \
+    -c /etc/cvmfs/keys/${CVMFS_TEST_REPO}.crt \
+    -k /etc/cvmfs/keys/${CVMFS_TEST_REPO}.key \
+    -n ${CVMFS_TEST_REPO}                     \
+    -u ${CVMFS_STRATUM0}                      \
+    -m ${forged_manifest}                     \
+    -t ${CVMFS_SPOOL_DIR}/tmp                 \
+    -r ${CVMFS_UPSTREAM_STORAGE}               > /dev/null || return 31
+
+  # Keep the forged revision's reference log current.
+  echo "reconstructing reference log for the forged revision"
+  cvmfs_swissknife reconstruct_reflog \
+    -r ${CVMFS_STRATUM0}              \
+    -u ${CVMFS_UPSTREAM_STORAGE}      \
+    -n ${CVMFS_REPOSITORY_NAME}       \
+    -t ${CVMFS_SPOOL_DIR}/tmp         \
+    -k ${CVMFS_PUBLIC_KEY}            \
+    -R ${CVMFS_SPOOL_DIR}/reflog.chksum > /dev/null || return 32
+
+  echo "verify the corruption is detected as a statistics mismatch"
+  local check_corrupt_log="${scratch_dir}/check_corrupt.log"
+  check_repository $CVMFS_TEST_REPO -s /foo > $check_corrupt_log 2>&1 && return 33
+  cat $check_corrupt_log
+  cat $check_corrupt_log | grep -e "statistics.*mismatch" || return 34
+
+  # Repair from the check log without passing -p.
+  echo "repairing the corrupted subtree from the check log ($check_corrupt_log)"
+  local repair_log_5="repair_fix.log"
+  check_repository $CVMFS_TEST_REPO -L $check_corrupt_log > $repair_log_5 2>&1 \
+    || return 35
+  cat $repair_log_5
+
+  local root_hash_after_fix
+  root_hash_after_fix=$(get_current_root_catalog $CVMFS_TEST_REPO)
+  echo "verify the repair actually republished a new revision"
+  [ "x$root_hash_before" != "x$root_hash_after_fix" ] || return 36
+
+  echo "verify /foo is clean again after the repair"
+  check_repository $CVMFS_TEST_REPO -s /foo || return 37
+
+  # ============================================================================
+  echo "final integrity check (repo must still be clean)"
+  check_repository $CVMFS_TEST_REPO -i || return 38
+
+  return 0
+}

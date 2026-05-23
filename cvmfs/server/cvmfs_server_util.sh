@@ -1401,10 +1401,18 @@ Supported Commands:
                   [-t tag (check given tag instead of trunk)]
                   [-s path to nested catalog subtree to check]
                   [-r repair reflog problems]
+                  [-p path to nested catalog subtree to repair and republish]
+                  [-L path to a previous check's log: repair every subtree
+                    it reported a problem for, without re-running check]
+                  [-y dry-run for -p/-L: report repairs without publishing]
                   [-a check all active local repos, log to checks.log |
                     <fully qualified name> ]
                   <fully qualified name>
-                  Checks if the repository is sane
+                  Checks if the repository is sane.
+                  With -p and/or -L, repairs catalog corruption confined to
+                  the given subtree(s) (orphaned entries, hardlink groups,
+                  dangling nested references, statistics counters) and
+                  republishes (Stratum 0).
   transaction     [-t (timeout in seconds for waiting if the repository is busy, 0=infinite)]
                   [-T /template-from=/template-to]
                   <fully qualified name>

@@ -28,11 +28,7 @@ __do_check() {
 
   # more sanity checks
   is_owner_or_root $name || die "Permission denied: Repository $name is owned by $CVMFS_USER"
-  # Skip FUSE mount health check for mountless gateway publishers.
-  # In mountless mode the rdonly and rw FUSE mounts are intentionally absent;
-  # health_check -r would attempt to mount them (via cvmfs_suid_helper), which
-  # fails in an unprivileged/no-systemd container.  The catalog integrity check
-  # below reads directly from the HTTP Stratum0 URL and works without FUSE.
+  # Mountless gateway publishers have no FUSE mounts to check.
   local _hc_upstream_type
   _hc_upstream_type=$(get_upstream_type "$CVMFS_UPSTREAM_STORAGE")
   if [ "x$_hc_upstream_type" = xgw ] && \
@@ -190,6 +186,118 @@ __print_check_summary() {
   sed -e 's/^/    /' -e "${max_show}q" "$error_log"
   if [ "$num_errors" -gt "$max_show" ]; then
     echo "    ... ($((num_errors - max_show)) more, see the output above)"
+  fi
+}
+
+# Repairs and republishes explicitly requested or logged subtrees.
+# Parameters: <subtree> <check_log> <dry_run> <repository>
+__do_repair() {
+  local subtree="$1"
+  local check_log="$2"
+  local dry_run="$3"
+  shift 3
+
+  check_parameter_count_with_guessing $#
+  local name=$(get_or_guess_repository_name $1)
+
+  check_repository_existence $name || die "The repository $name does not exist"
+  load_repo_config $name
+  is_owner_or_root $name || die "Permission denied: Repository $name is owned by $CVMFS_USER"
+  is_stratum0 $name      || die "Subtree repair can only be run on a Stratum 0"
+  check_repository_compatibility $name
+  is_in_transaction $name && die "Cannot repair while a transaction is open. Abort or publish it first."
+
+  if is_garbage_collectable $name; then
+    acquire_gc_lock $name repair || die "Failed to acquire gc lock for $name"
+    trap "release_gc_lock $name" EXIT HUP INT TERM
+  fi
+
+  local user_shell="$(get_user_shell $name)"
+  local temp_dir="${CVMFS_SPOOL_DIR}/tmp"
+  local new_manifest="${temp_dir}/new_manifest"
+  rm -f $new_manifest
+
+  local dry_param=""
+  [ $dry_run -ne 0 ] && dry_param="-d"
+  local subtree_param=""
+  [ "x$subtree" != "x" ] && subtree_param="-s '$subtree'"
+  local log_param=""
+  [ "x$check_log" != "x" ] && log_param="-L '$check_log'"
+
+  local repair_msg="Repairing"
+  if [ "x$subtree" != "x" ]; then
+    repair_msg="$repair_msg subtree '$subtree'"
+  fi
+  if [ "x$check_log" != "x" ]; then
+    if [ "x$subtree" != "x" ]; then
+      repair_msg="$repair_msg and the subtrees reported in '$check_log'"
+    else
+      repair_msg="$repair_msg the subtrees reported in '$check_log'"
+    fi
+  fi
+  echo "$repair_msg of repository $name..."
+  local repair_cmd
+  repair_cmd="$(__swissknife_cmd dbg) check_repair       \
+                     -r $CVMFS_STRATUM0                  \
+                     -u $CVMFS_UPSTREAM_STORAGE          \
+                     -t $temp_dir                        \
+                     -o $new_manifest                    \
+                     $subtree_param                      \
+                     $log_param                          \
+                     -k ${CVMFS_PUBLIC_KEY}              \
+                     -n ${CVMFS_REPOSITORY_NAME}         \
+                     $(get_swissknife_proxy)             \
+                     $dry_param"
+  $user_shell "$repair_cmd" || die "fail! (repairing subtree)"
+
+  if [ $dry_run -ne 0 ]; then
+    echo "Dry run finished. No changes were published."
+    return 0
+  fi
+
+  if [ ! -f $new_manifest ]; then
+    echo "No repair was necessary; repository unchanged."
+    return 0
+  fi
+  chown $CVMFS_USER $new_manifest 2>/dev/null
+
+  echo -n "Signing repaired repository revision... "
+  create_whitelist $name ${CVMFS_USER} ${CVMFS_UPSTREAM_STORAGE} $temp_dir > /dev/null
+  sign_manifest $name $new_manifest || die "fail! (cannot sign repo)"
+  echo "done"
+
+  # Preserve the newly uploaded catalogs for garbage collection.
+  if has_reference_log $name; then
+    echo -n "Reconstructing reference log... "
+    local reflog_cmd="$(__swissknife_cmd dbg) reconstruct_reflog \
+                       -r $CVMFS_STRATUM0                        \
+                       $(get_swissknife_proxy)                   \
+                       -u $CVMFS_UPSTREAM_STORAGE                \
+                       -n $CVMFS_REPOSITORY_NAME                 \
+                       -t ${temp_dir}                            \
+                       -k $CVMFS_PUBLIC_KEY                      \
+                       -R $(get_reflog_checksum $name)"
+    if $user_shell "$reflog_cmd"; then echo "done"; else echo "WARNING (failed)"; fi
+  fi
+
+  load_repo_config $name
+  local remote_hash
+  remote_hash=$(get_published_root_hash $name)
+  if is_mounted "${CVMFS_SPOOL_DIR}/rdonly"; then
+    run_suid_helper rw_umount $name     > /dev/null 2>&1 || die "fail! (unmounting /cvmfs/$name)"
+    run_suid_helper rdonly_umount $name > /dev/null 2>&1 || die "fail! (unmounting ${CVMFS_SPOOL_DIR}/rdonly)"
+    set_ro_root_hash $name $remote_hash
+    run_suid_helper rdonly_mount $name  > /dev/null 2>&1 || die "fail! (mounting ${CVMFS_SPOOL_DIR}/rdonly)"
+    run_suid_helper rw_mount $name      > /dev/null 2>&1 || die "fail! (mounting /cvmfs/$name)"
+  else
+    set_ro_root_hash $name $remote_hash
+  fi
+
+  echo "Repository $name repaired and republished."
+  if [ "x$subtree" != "x" ] && [ "x$check_log" = "x" ]; then
+    echo "Run 'cvmfs_server check -s $subtree $name' to verify."
+  else
+    echo "Run 'cvmfs_server check $name' to verify."
   fi
 }
 
@@ -380,10 +488,13 @@ cvmfs_server_check() {
   local tag=
   local repair_reflog=0
   local scratch_dir=""
+  local repair_subtree=""
+  local repair_log=""
+  local repair_dry_run=0
 
   # optional parameter handling
   OPTIND=1
-  while getopts "acit:s:rx:" option
+  while getopts "acit:s:rx:p:yL:" option
   do
     case $option in
       a)
@@ -407,6 +518,15 @@ cvmfs_server_check() {
       x)
         scratch_dir="$OPTARG"
       ;;
+      p)
+        repair_subtree="$OPTARG"
+      ;;
+      y)
+        repair_dry_run=1
+      ;;
+      L)
+        repair_log="$OPTARG"
+      ;;
       ?)
         shift $(($OPTIND-2))
         usage "Command check: Unrecognized option: $1"
@@ -414,6 +534,13 @@ cvmfs_server_check() {
     esac
   done
   shift $(($OPTIND-1))
+
+  # Repair mode writes a new repository revision.
+  if [ "x$repair_subtree" != "x" ] || [ "x$repair_log" != "x" ]; then
+    [ $do_all -eq 0 ] || die "-a cannot be combined with -p/-L (repair)"
+    __do_repair "$repair_subtree" "$repair_log" "$repair_dry_run" "$@"
+    return $?
+  fi
 
   if [ $do_all -eq 1 ]; then
     [ $# -eq 0 ] || die "no non-option parameters expected with -a"
