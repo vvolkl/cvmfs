@@ -491,3 +491,77 @@ TEST_F(T_Cvmfs, cvmfs_open) {
 
   TestTearDown();
 }
+
+
+TEST_F(T_Cvmfs, chunked_direct_io_release_reproducer_old_encoding) {
+  TestSetup();
+
+  const fuse_ino_t ino = 100;
+  fuse_req_t mock_req = NULL;
+  struct fuse_file_info fi = {};
+  const glue::PageCacheTracker::OpenDirectives open_directives(true, true);
+
+  // Reproduce the pre-fix chunked open sequence from cvmfs_open(): encode the
+  // direct-I/O bit first, then overwrite fi->fh with next_handle.  This loses
+  // kBitDirectIo and makes cvmfs_release() call Close() even though the file
+  // came from OpenDirect().
+  cvmfs::FillOpenFlags(open_directives, &fi);
+  fi.fh = 2;
+  fi.fh = static_cast<uint64_t>(-static_cast<int64_t>(fi.fh));
+
+  const int64_t fd = static_cast<int64_t>(fi.fh);
+  uint64_t abs_fd = (fd < 0) ? -fd : fd;
+  EXPECT_FALSE(TestBit(glue::PageCacheTracker::kBitDirectIo, abs_fd));
+
+  ChunkTables *chunk_tables = cvmfs::mount_point_->chunk_tables();
+  chunk_tables->handle2uniqino.Insert(2, ino);
+  chunk_tables->handle2fd.Insert(2, ChunkFd());
+  chunk_tables->inode2references.Insert(ino, 2);
+  cvmfs::file_system_->no_open_files()->Set(1);
+  g_fuseReplyErr = -999;
+
+  EXPECT_CALL(*mock_page_cache_tracker_, Close(ino)).Times(1);
+  cvmfs::cvmfs_release(mock_req, ino, &fi);
+
+  ASSERT_EQ(0, g_fuseReplyErr);
+  ASSERT_EQ(0, cvmfs::file_system_->no_open_files()->Get());
+
+  TestTearDown();
+}
+
+
+TEST_F(T_Cvmfs, chunked_direct_io_release_skips_close_with_fixed_encoding) {
+  TestSetup();
+
+  const fuse_ino_t ino = 100;
+  fuse_req_t mock_req = NULL;
+  struct fuse_file_info fi = {};
+  const glue::PageCacheTracker::OpenDirectives open_directives(true, true);
+
+  // This is the fixed cvmfs_open() sequence: assign next_handle first and only
+  // then encode the page-cache-tracker flags into the chunk handle.
+  fi.fh = 2;
+  cvmfs::FillOpenFlags(open_directives, &fi);
+  fi.fh = static_cast<uint64_t>(-static_cast<int64_t>(fi.fh));
+
+  const int64_t fd = static_cast<int64_t>(fi.fh);
+  uint64_t abs_fd = (fd < 0) ? -fd : fd;
+  EXPECT_TRUE(TestBit(glue::PageCacheTracker::kBitDirectIo, abs_fd));
+  ClearBit(glue::PageCacheTracker::kBitDirectIo, &abs_fd);
+  EXPECT_EQ(2u, abs_fd);
+
+  ChunkTables *chunk_tables = cvmfs::mount_point_->chunk_tables();
+  chunk_tables->handle2uniqino.Insert(2, ino);
+  chunk_tables->handle2fd.Insert(2, ChunkFd());
+  chunk_tables->inode2references.Insert(ino, 2);
+  cvmfs::file_system_->no_open_files()->Set(1);
+  g_fuseReplyErr = -999;
+
+  EXPECT_CALL(*mock_page_cache_tracker_, Close(ino)).Times(0);
+  cvmfs::cvmfs_release(mock_req, ino, &fi);
+
+  ASSERT_EQ(0, g_fuseReplyErr);
+  ASSERT_EQ(0, cvmfs::file_system_->no_open_files()->Get());
+
+  TestTearDown();
+}
