@@ -1,5 +1,8 @@
 
 2.14.0:
+  * [gateway] Support an external PostgreSQL lease database (db_type/db_url) for
+    high-availability (active-passive) deployments
+  * [server] default CVMFS_AUTO_TAG_TIMESPAN to "2 weeks ago" on mkfs
   * [client] Reduce client capabilities to minimum (#3730)
   * [server] never publish a snapshot with a missing root catalog (#4272)
   * [client] fix bug when using libcurl 8.20+ (#4252)

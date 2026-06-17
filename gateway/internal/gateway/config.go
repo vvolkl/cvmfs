@@ -30,6 +30,15 @@ type Config struct {
 	ReceiverPath string `mapstructure:"receiver_path"`
 	// WorkDir is where the lease BD stores its data
 	WorkDir string `mapstructure:"work_dir"`
+	// DBType selects the lease store backend: "sqlite" (default, local file)
+	// or "postgres" (external, highly-available database). The value "etcd" is
+	// reserved for a future backend.
+	DBType string `mapstructure:"db_type"`
+	// DBURL is the connection string for an external lease store (used when
+	// DBType is not "sqlite"), e.g.
+	// "postgres://user:pass@host:5432/cvmfs_gateway?sslmode=require". Ignored
+	// for the sqlite backend, which uses WorkDir instead.
+	DBURL string `mapstructure:"db_url"`
 	// MockReceiver enables a mocked implementation of the receiver worker
 	MockReceiver bool `mapstructure:"mock_receiver"`
 	// EnableKeyEndpoint enables the /repos/:name/keys endpoint that allows
@@ -51,6 +60,8 @@ func ReadConfig() (*Config, error) {
 	pflag.Int("num_receivers", 1, "number of parallel cvmfs_receiver processes to run")
 	pflag.String("receiver_path", "/usr/bin/cvmfs_receiver", "the path of the cvmfs_receiver executable")
 	pflag.String("work_dir", "/var/lib/cvmfs-gateway", "the working directory for database files")
+	pflag.String("db_type", "sqlite", "lease store backend (sqlite|postgres)")
+	pflag.String("db_url", "", "connection string for an external lease store (used when db_type != sqlite)")
 	pflag.Bool("mock_receiver", false, "enable the mocked implementation of the receiver process (for testing)")
 	pflag.Bool("enable_key_endpoint", false, "enable the /repos/:name/keys endpoint for publisher key retrieval")
 	pflag.Parse()

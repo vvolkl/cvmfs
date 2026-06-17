@@ -1,0 +1,163 @@
+# docker-compose.yml – CernVM-FS gateway with an EXTERNAL Postgres lease DB
+#
+# This stack is the mountless publishing stack (see ../publish-mountless) with
+# one change: the gateway stores its lease/repository state in an external
+# PostgreSQL database instead of the local sqlite file. This is the building
+# block for an active-passive HA gateway: several gateway instances, only one
+# active at a time, all sharing the same external (HA) database so that lease
+# state survives a gateway failover.
+#
+# It reuses the publish-mountless image, entrypoints, garage config and repo
+# config via relative paths; only the gateway's user.json differs (it sets
+# db_type=postgres / db_url) and a postgres service is added.
+#
+# Services
+# --------
+#   garage        – Garage S3-compatible object storage (v2)
+#   garage-setup  – one-shot init container: layout, key, bucket creation
+#   postgres      – external lease database for the gateway
+#   gateway       – cvmfs_gateway + cvmfs_receiver (mountless), db_type=postgres
+#   publisher     – mountless publisher (connect-gw -P), runs ingest commands
+#
+# Usage
+# -----
+#   docker compose up --build -d
+#   docker compose exec publisher cvmfs_server ingest \
+#       --tar_file /path/to/content.tar --base_dir / test.repo.org
+#   docker compose down -v --remove-orphans
+
+name: cvmfs-gateway-postgres
+
+x-s3-env: &s3-env
+    S3_ACCESS_KEY: GK00c4f5e0a1b2c3d4e5f60011
+    S3_SECRET_KEY: 00c4f5e0a1b2c3d4e5f6001100c4f5e0a1b2c3d4e5f6001100c4f5e0a1b2c3d4
+    S3_BUCKET: cvmfs
+
+x-gw-key-env: &gw-key-env
+    GW_KEY_ID: mykey
+    GW_KEY_SECRET: mysecret
+
+services:
+
+    # -----------------------------------------------------------------------
+    # Garage – S3-compatible object storage (reused from publish-mountless)
+    # -----------------------------------------------------------------------
+    garage:
+        image: docker.io/dxflrs/garage:v2.2.0
+        container_name: cvmfs-garage
+        hostname: cvmfs-garage
+        networks:
+            default:
+                aliases:
+                    - cvmfs.web.garage.internal
+        volumes:
+            - ../publish-mountless/config/garage.toml:/etc/garage.toml:ro
+            - garage-meta:/var/lib/garage/meta
+            - garage-data:/var/lib/garage/data
+        healthcheck:
+            test: ["CMD", "/garage", "node", "id"]
+            interval: 3s
+            timeout: 5s
+            retries: 10
+
+    garage-setup:
+        image: alpine:3
+        container_name: cvmfs-garage-setup
+        depends_on:
+            - garage
+        environment:
+            GARAGE_ADMIN_URL: http://cvmfs-garage:3903
+            GARAGE_ADMIN_TOKEN: garage-admin-token
+            SETUP_GARAGE_DEBUG: "1"
+            <<: *s3-env
+        volumes:
+            - ../publish-mountless/scripts/setup_garage.sh:/setup_garage.sh:ro
+        entrypoint: ["/bin/sh", "-c"]
+        command:
+            - |
+              set -e
+              echo '[garage-setup] Installing curl and jq ...'
+              apk add --no-cache curl jq
+              echo '[garage-setup] Running setup_garage.sh ...'
+              sh /setup_garage.sh
+        restart: "no"
+
+    # -----------------------------------------------------------------------
+    # Postgres – external lease database for the gateway
+    #
+    # In a real HA deployment this would be a managed/replicated Postgres
+    # (Patroni, CloudNativePG, RDS Multi-AZ, CERN DBOD, ...). Here a single
+    # instance is enough to exercise the external-DB code path and failover.
+    # -----------------------------------------------------------------------
+    postgres:
+        image: postgres:16
+        container_name: cvmfs-postgres
+        hostname: cvmfs-postgres
+        environment:
+            POSTGRES_USER: cvmfs
+            POSTGRES_PASSWORD: cvmfs
+            POSTGRES_DB: cvmfs_gateway
+        volumes:
+            - pg-data:/var/lib/postgresql/data
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U cvmfs -d cvmfs_gateway"]
+            interval: 3s
+            timeout: 5s
+            retries: 20
+
+    # -----------------------------------------------------------------------
+    # Gateway + Receiver (mountless), lease DB in Postgres
+    # -----------------------------------------------------------------------
+    gateway:
+        build:
+            context: ../../../..
+            dockerfile: test/common/container/publish-mountless/Dockerfile.gateway
+        image: cvmfs-gateway-mountless:latest
+        container_name: cvmfs-gateway
+        hostname: cvmfs-gateway
+        depends_on:
+            garage:
+                condition: service_started
+            postgres:
+                condition: service_healthy
+        environment:
+            REPO_NAME: test.repo.org
+            REPO_OWNER: root
+            GARAGE_HOST: cvmfs-garage
+            GARAGE_S3_PORT: "3900"
+            STRATUM0_URL: http://cvmfs.web.garage.internal:3902
+            <<: [*gw-key-env, *s3-env]
+        volumes:
+            - ./config/user.json:/etc/cvmfs/gateway/user.json:ro
+            - ../publish-mountless/config/repo.json:/etc/cvmfs/gateway/repo.json:ro
+            - etc-cvmfs-repos:/etc/cvmfs/repositories.d
+            - etc-cvmfs-keys:/etc/cvmfs/keys
+            - var-lib-gateway:/var/lib/cvmfs-gateway
+        ports:
+            - "4929:4929"
+
+    # -----------------------------------------------------------------------
+    # Publisher (mountless – connect-gw -P, runs ingest commands)
+    # -----------------------------------------------------------------------
+    publisher:
+        image: cvmfs-gateway-mountless:latest
+        container_name: cvmfs-publisher
+        hostname: cvmfs-publisher
+        depends_on:
+            - gateway
+        entrypoint: ["/entrypoint-publisher.sh"]
+        environment:
+            REPO_NAME: test.repo.org
+            REPO_OWNER: root
+            GW_HOST: cvmfs-gateway
+            GW_PORT: "4929"
+            STRATUM0_URL: http://cvmfs.web.garage.internal:3902
+            <<: *gw-key-env
+
+volumes:
+    garage-meta:
+    garage-data:
+    pg-data:
+    etc-cvmfs-repos:
+    etc-cvmfs-keys:
+    var-lib-gateway:

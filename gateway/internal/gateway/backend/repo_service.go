@@ -12,24 +12,14 @@ func (s *Services) NewRepo(ctx context.Context, name string, enabled bool) error
 	outcome := "success"
 	defer logAction(ctx, "new_repo", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
 	repo := Repository{
 		Name:     name,
 		Manifest: "",
 		Enabled:  true,
 	}
 
-	if err := CreateRepository(ctx, tx, repo); err != nil {
+	if err := s.Store.CreateRepository(ctx, repo); err != nil {
 		return fmt.Errorf("could not create repository: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	return nil
@@ -42,19 +32,9 @@ func (s *Services) GetRepo(ctx context.Context, repoName string) (*RepositoryCon
 	outcome := "success"
 	defer logAction(ctx, "get_repo", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	repo, err := FindRepositoryByName(ctx, tx, repoName)
+	repo, err := s.Store.FindRepositoryByName(ctx, repoName)
 	if err != nil {
 		return nil, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	repoConfig := s.Access.GetRepo(repoName)
@@ -72,13 +52,7 @@ func (s *Services) GetRepos(ctx context.Context) (map[string]RepositoryConfig, e
 	outcome := "success"
 	defer logAction(ctx, "get_repos", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	repos, err := FindAllRepositories(ctx, tx)
+	repos, err := s.Store.FindAllRepositories(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -88,10 +62,6 @@ func (s *Services) GetRepos(ctx context.Context) (map[string]RepositoryConfig, e
 		cfg := repoConfig[repo.Name]
 		cfg.Enabled = repo.Enabled
 		repoConfig[repo.Name] = cfg
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	return repoConfig, nil
@@ -105,25 +75,15 @@ func (s *Services) SetRepoEnabled(ctx context.Context, repoName string, enable b
 	outcome := "success"
 	defer logAction(ctx, "set_repo_enabled", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	repo, err := FindRepositoryByName(ctx, tx, repoName)
+	repo, err := s.Store.FindRepositoryByName(ctx, repoName)
 	if err != nil {
 		return err
 	}
 
 	repo.Enabled = enable
 
-	if err := UpdateRepository(ctx, tx, *repo); err != nil {
+	if err := s.Store.UpdateRepository(ctx, *repo); err != nil {
 		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	return nil
@@ -135,18 +95,8 @@ func (s *Services) DeleteAllRepositories(ctx context.Context) error {
 	outcome := "success"
 	defer logAction(ctx, "delete_all", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	if err := DeleteAllRepositories(ctx, tx); err != nil {
+	if err := s.Store.DeleteAllRepositories(ctx); err != nil {
 		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	return nil

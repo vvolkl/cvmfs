@@ -1,0 +1,192 @@
+name: CI_gateway_postgres
+
+on:
+  push:
+    branches: ['devel', 'cvmfs*', 'cernvm-cr']
+  pull_request:
+    paths:
+      - 'cvmfs/server/**'
+      - 'gateway/**'
+      - 'test/common/container/gateway-postgres/**'
+      - 'test/common/container/publish-mountless/**'
+      - '.github/workflows/ci_gateway_postgres.yml'
+    branches: ['devel', 'cvmfs*']
+  workflow_dispatch:
+
+jobs:
+  gateway-postgres:
+    name: "Gateway with external Postgres lease DB (mountless publish + failover)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        working-directory: test/common/container/gateway-postgres
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build gateway image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: test/common/container/publish-mountless/Dockerfile.gateway
+          tags: cvmfs-gateway-mountless:latest
+          load: true
+          cache-from: type=gha,scope=mountless-gateway
+          cache-to: type=gha,mode=max,scope=mountless-gateway
+
+      - name: Start the stack
+        run: |
+          docker compose up -d
+
+          echo "Waiting for garage-setup to complete ..."
+          for i in $(seq 1 90); do
+            status=$(docker inspect cvmfs-garage-setup --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
+            if [ "$status" = "exited" ]; then
+              exit_code=$(docker inspect cvmfs-garage-setup --format '{{.State.ExitCode}}')
+              if [ "$exit_code" = "0" ]; then
+                echo "garage-setup completed successfully (after ${i}s)"
+                break
+              else
+                echo "FAIL: garage-setup exited with code $exit_code"
+                docker compose logs garage-setup 2>&1
+                exit 1
+              fi
+            fi
+            sleep 1
+          done
+
+          echo "Waiting for gateway to become ready ..."
+          for i in $(seq 1 120); do
+            if docker compose logs gateway 2>&1 | grep -q "Starting cvmfs_gateway"; then
+              echo "Gateway is ready (after ${i}s)"
+              break
+            fi
+            sleep 1
+          done
+
+          echo "Waiting for publisher to become ready ..."
+          for i in $(seq 1 120); do
+            if docker compose logs publisher 2>&1 | grep -q "Publisher ready"; then
+              echo "Publisher is ready (after ${i}s)"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Verify the gateway is actually using Postgres
+        run: |
+          echo "=== Gateway opened the postgres lease store ==="
+          docker compose logs gateway 2>&1 | grep -q "postgres lease store opened" \
+            || { echo "FAIL: gateway did not open the postgres lease store"; docker compose logs gateway | tail -50; exit 1; }
+          echo "OK: gateway logged 'postgres lease store opened'"
+
+          echo "=== Lease schema lives in Postgres (not in a local sqlite file) ==="
+          tables=$(docker compose exec -T postgres \
+            psql -U cvmfs -d cvmfs_gateway -tA -c \
+            "select table_name from information_schema.tables where table_name in ('lease','repository','schemaversion') order by table_name;")
+          echo "Found tables: $tables"
+          echo "$tables" | grep -q "lease"        || { echo "FAIL: 'lease' table missing in postgres"; exit 1; }
+          echo "$tables" | grep -q "repository"   || { echo "FAIL: 'repository' table missing in postgres"; exit 1; }
+          echo "$tables" | grep -q "schemaversion"|| { echo "FAIL: 'schemaversion' table missing in postgres"; exit 1; }
+
+          echo "=== Repository table was populated from repo.json ==="
+          docker compose exec -T postgres \
+            psql -U cvmfs -d cvmfs_gateway -tA -c \
+            "select Name from Repository;" | grep -q "test.repo.org" \
+            || { echo "FAIL: repository row missing in postgres"; exit 1; }
+          echo "OK: postgres holds the gateway lease schema and repository row"
+
+      - name: Check gateway API is reachable
+        run: |
+          docker compose exec -T gateway curl -sf http://localhost:4929/api/v1
+          echo ""
+          echo "OK: gateway API is responding"
+
+      - name: Ingest a tarball (full lease lifecycle through Postgres)
+        run: |
+          echo "=== Creating test tarball inside publisher container ==="
+          docker compose exec -T publisher bash -c '
+            set -e
+            mkdir -p /tmp/test-content/subdir
+            echo "hello from postgres-backed gateway" > /tmp/test-content/hello.txt
+            echo "file in subdir" > /tmp/test-content/subdir/nested.txt
+            tar cf /tmp/test-content.tar -C /tmp test-content
+          '
+
+          echo "=== Running cvmfs_server ingest (NewLease -> SubmitPayload -> CommitLease) ==="
+          docker compose exec -T publisher \
+            cvmfs_server ingest \
+              --tar_file /tmp/test-content.tar \
+              --base_dir / \
+              test.repo.org
+          echo "OK: ingest completed against the postgres-backed gateway"
+
+      - name: Verify published manifest
+        run: |
+          published=$(docker compose exec -T gateway \
+            curl -sf http://cvmfs.web.garage.internal:3902/test.repo.org/.cvmfspublished)
+          echo "$published"
+          echo "$published" | grep -q "^C" || { echo "FAIL: no catalog hash in manifest"; exit 1; }
+          echo "OK: published manifest contains a catalog hash"
+
+      - name: Failover sanity - lease state survives a gateway restart
+        run: |
+          echo "=== Write a sentinel lease row directly into Postgres ==="
+          # Proves the external DB (not the gateway's local disk) is the source
+          # of truth: this row must still be present after the gateway process
+          # is destroyed and recreated.
+          docker compose exec -T postgres \
+            psql -U cvmfs -d cvmfs_gateway -c \
+            "insert into Lease (Token, Repository, Path, KeyID, Expiration, ProtocolVersion, Hostname)
+             values ('failover-sentinel', 'test.repo.org', '/sentinel', 'mykey', 0, 3, 'ci');"
+
+          echo "=== Restart the gateway (Postgres stays up) ==="
+          docker compose restart gateway
+
+          echo "Waiting for the gateway to reconnect to Postgres ..."
+          for i in $(seq 1 120); do
+            # the second "postgres lease store opened" is the post-restart open
+            count=$(docker compose logs gateway 2>&1 | grep -c "postgres lease store opened" || true)
+            if [ "${count:-0}" -ge 2 ]; then
+              echo "Gateway reconnected to Postgres after restart (after ${i}s)"
+              break
+            fi
+            sleep 1
+          done
+          count=$(docker compose logs gateway 2>&1 | grep -c "postgres lease store opened" || true)
+          [ "${count:-0}" -ge 2 ] || { echo "FAIL: gateway did not reopen the postgres store after restart"; docker compose logs gateway | tail -50; exit 1; }
+
+          echo "=== Sentinel row is still present (state persisted across restart) ==="
+          docker compose exec -T postgres \
+            psql -U cvmfs -d cvmfs_gateway -tA -c \
+            "select Token from Lease where Token='failover-sentinel';" | grep -q "failover-sentinel" \
+            || { echo "FAIL: sentinel lease row lost across gateway restart"; exit 1; }
+
+          echo "=== Gateway API is reachable again ==="
+          docker compose exec -T gateway curl -sf http://localhost:4929/api/v1
+          echo ""
+          echo "OK: gateway recovered and external lease state survived the restart"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== docker compose ps ==="
+          docker compose ps -a
+          echo "=== gateway logs ==="
+          docker compose logs gateway 2>&1 | tail -100
+          echo "=== postgres logs ==="
+          docker compose logs postgres 2>&1 | tail -50
+          echo "=== garage logs ==="
+          docker compose logs garage 2>&1 | tail -30
+          echo "=== publisher logs ==="
+          docker compose logs publisher 2>&1 | tail -50
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans

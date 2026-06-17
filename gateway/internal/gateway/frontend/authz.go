@@ -62,7 +62,7 @@ func WithAdminAuthz(ac be.ActionController, next httprouter.Handle) httprouter.H
 		default:
 			msg := fmt.Sprintf("authorization middleware not implemented for HTTP method: %v", req.Method)
 			gw.LogC(ctx, "http", gw.LogError).
-				Msgf(msg)
+				Msg(msg)
 			http.Error(w, msg, http.StatusMethodNotAllowed)
 		}
 

@@ -6,7 +6,8 @@
     "log_level" : "info",
     "log_timestamps" : false,
     "work_dir": "/var/lib/cvmfs-gateway",
+    "enable_key_endpoint": true,
 
-    "db_type": "sqlite",
-    "db_url": ""
+    "db_type": "postgres",
+    "db_url": "postgres://cvmfs:cvmfs@cvmfs-postgres:5432/cvmfs_gateway?sslmode=disable"
 }

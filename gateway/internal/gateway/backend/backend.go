@@ -15,7 +15,7 @@ import (
 type Services struct {
 	Config        gw.Config
 	Access        AccessConfig
-	DB            *DB
+	Store         LeaseStore
 	Pool          *receiver.Pool
 	Notifications *NotificationSystem
 	StatsMgr      *stats.StatisticsMgr
@@ -52,9 +52,9 @@ func StartBackend(cfg gw.Config) (*Services, error) {
 		return nil, fmt.Errorf("loading repository access configuration failed: %w", err)
 	}
 
-	db, err := OpenDB(cfg)
+	store, err := OpenLeaseStore(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("could not create lease DB: %w", err)
+		return nil, fmt.Errorf("could not create lease store: %w", err)
 	}
 
 	smgr := stats.NewStatisticsMgr()
@@ -69,7 +69,7 @@ func StartBackend(cfg gw.Config) (*Services, error) {
 		return nil, fmt.Errorf("could not initialize notification system: %w", err)
 	}
 
-	services := Services{Config: cfg, Access: *ac, DB: db, Pool: pool, Notifications: ns, StatsMgr: smgr}
+	services := Services{Config: cfg, Access: *ac, Store: store, Pool: pool, Notifications: ns, StatsMgr: smgr}
 
 	if err := PopulateRepositories(&services); err != nil {
 		return nil, fmt.Errorf("could not populate repository table: %w", err)
@@ -80,7 +80,7 @@ func StartBackend(cfg gw.Config) (*Services, error) {
 
 // Stop all the backend services
 func (s *Services) Stop() error {
-	if err := s.DB.Close(); err != nil {
+	if err := s.Store.Close(); err != nil {
 		return fmt.Errorf("could not close database: %w", err)
 	}
 	return nil

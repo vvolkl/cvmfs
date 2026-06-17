@@ -54,7 +54,7 @@ func CreateLease(ctx context.Context, tx *sql.Tx, lease Lease) error {
 	t0 := time.Now()
 
 	res, err := tx.ExecContext(ctx,
-		"insert into Lease (Token, Repository, Path, KeyID, Expiration, ProtocolVersion, Hostname) values (?, ?, ?, ?, ?, ?, ?);",
+		rebind("insert into Lease (Token, Repository, Path, KeyID, Expiration, ProtocolVersion, Hostname) values (?, ?, ?, ?, ?, ?, ?);"),
 		lease.Token, lease.Repository, lease.Path, lease.KeyID, lease.Expiration.UnixMilli(), lease.ProtocolVersion, lease.Hostname)
 	if err != nil {
 		return fmt.Errorf("could not insert new lease: %w", err)
@@ -102,7 +102,7 @@ func FindAllLeases(ctx context.Context, tx *sql.Tx) ([]Lease, error) {
 func FindAllActiveLeases(ctx context.Context, tx *sql.Tx) ([]Lease, error) {
 	t0 := time.Now()
 
-	rows, err := tx.QueryContext(ctx, "select * from Lease where Expiration >= ?;", t0.UnixMilli())
+	rows, err := tx.QueryContext(ctx, rebind("select * from Lease where Expiration >= ?;"), t0.UnixMilli())
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -130,7 +130,7 @@ func FindAllLeasesByRepositoryAndOverlappingPath(ctx context.Context, tx *sql.Tx
 
 	rows, err := tx.QueryContext(
 		ctx,
-		"select * from Lease where Repository = ? and (? like Path || '%' or Path like ? || '%');", repository, path, path)
+		rebind("select * from Lease where Repository = ? and (? like Path || '%' or Path like ? || '%');"), repository, path, path)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -158,7 +158,7 @@ func FindLeaseByToken(ctx context.Context, tx *sql.Tx, token string) (*Lease, er
 
 	rows, err := tx.QueryContext(
 		ctx,
-		"select * from Lease where Token = ?;", token)
+		rebind("select * from Lease where Token = ?;"), token)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -184,7 +184,7 @@ func FindLeaseByToken(ctx context.Context, tx *sql.Tx, token string) (*Lease, er
 func DeleteAllExpiredLeases(ctx context.Context, tx *sql.Tx) error {
 	t0 := time.Now()
 
-	res, err := tx.ExecContext(ctx, "delete from Lease where Expiration < ?", t0.UnixMilli())
+	res, err := tx.ExecContext(ctx, rebind("delete from Lease where Expiration < ?"), t0.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("delete statement failed: %w", err)
 	}
@@ -201,7 +201,7 @@ func DeleteAllExpiredLeases(ctx context.Context, tx *sql.Tx) error {
 func DeleteAllLeasesByRepositoryAndPathPrefix(ctx context.Context, tx *sql.Tx, repo, path string) error {
 	t0 := time.Now()
 
-	res, err := tx.ExecContext(ctx, "delete from Lease where Repository = ? and Path like ? || '%'", repo, path)
+	res, err := tx.ExecContext(ctx, rebind("delete from Lease where Repository = ? and Path like ? || '%'"), repo, path)
 	if err != nil {
 		return fmt.Errorf("delete statement failed: %w", err)
 	}
@@ -218,7 +218,7 @@ func DeleteAllLeasesByRepositoryAndPathPrefix(ctx context.Context, tx *sql.Tx, r
 func DeleteAllLeasesByRepository(ctx context.Context, tx *sql.Tx, repo string) error {
 	t0 := time.Now()
 
-	res, err := tx.ExecContext(ctx, "delete from Lease where Repository = ?", repo)
+	res, err := tx.ExecContext(ctx, rebind("delete from Lease where Repository = ?"), repo)
 	if err != nil {
 		return fmt.Errorf("delete statement failed: %w", err)
 	}
@@ -235,7 +235,7 @@ func DeleteAllLeasesByRepository(ctx context.Context, tx *sql.Tx, repo string) e
 func DeleteLeaseByToken(ctx context.Context, tx *sql.Tx, token string) error {
 	t0 := time.Now()
 
-	res, err := tx.ExecContext(ctx, "delete from Lease where Token = ?", token)
+	res, err := tx.ExecContext(ctx, rebind("delete from Lease where Token = ?"), token)
 	if err != nil {
 		return fmt.Errorf("delete statement failed: %w", err)
 	}

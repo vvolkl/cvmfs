@@ -147,7 +147,7 @@ func StartTestBackend(name string, maxLeaseTime time.Duration) (*Services, strin
 		os.Exit(4)
 	}
 
-	services := Services{Config: cfg, Access: ac, DB: db, Pool: pool, StatsMgr: smgr}
+	services := Services{Config: cfg, Access: ac, Store: db, Pool: pool, StatsMgr: smgr}
 
 	if err := PopulateRepositories(&services); err != nil {
 		os.Exit(5)

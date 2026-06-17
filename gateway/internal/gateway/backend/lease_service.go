@@ -35,12 +35,6 @@ func (s *Services) NewLease(ctx context.Context, keyID, leasePath, hostname stri
 		return "", err
 	}
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return "", fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
 	repoConfig, err := s.GetRepo(ctx, repo)
 	if err != nil {
 		return "", fmt.Errorf("could not retrieve repository information: %w", err)
@@ -59,7 +53,7 @@ func (s *Services) NewLease(ctx context.Context, keyID, leasePath, hostname stri
 		return "", err
 	}
 
-	leases, err := FindAllLeasesByRepositoryAndOverlappingPath(ctx, tx, repo, path)
+	leases, err := s.Store.FindLeasesByRepoAndOverlappingPath(ctx, repo, path)
 	if err != nil {
 		return "", err
 	}
@@ -74,7 +68,7 @@ func (s *Services) NewLease(ctx context.Context, keyID, leasePath, hostname stri
 	}
 
 	// Delete expired leases
-	if err := DeleteAllExpiredLeases(ctx, tx); err != nil {
+	if err := s.Store.DeleteExpiredLeases(ctx); err != nil {
 		outcome = err.Error()
 		return "", err
 	}
@@ -90,7 +84,7 @@ func (s *Services) NewLease(ctx context.Context, keyID, leasePath, hostname stri
 		Hostname:        hostname,
 	}
 
-	if err := CreateLease(ctx, tx, lease); err != nil {
+	if err := s.Store.CreateLease(ctx, lease); err != nil {
 		outcome = err.Error()
 		return "", err
 	}
@@ -108,10 +102,6 @@ func (s *Services) NewLease(ctx context.Context, keyID, leasePath, hostname stri
 		return "", err
 	}
 
-	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("could not commit transaction: %w", err)
-	}
-
 	outcome = fmt.Sprintf("success: %v", lease.Token)
 	return lease.Token, nil
 }
@@ -125,13 +115,7 @@ func (s *Services) GetLeases(ctx context.Context) (map[string]LeaseDTO, error) {
 	outcome := "success"
 	defer logAction(ctx, "get_leases", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	leases, err := FindAllActiveLeases(ctx, tx)
+	leases, err := s.Store.FindActiveLeases(ctx)
 	if err != nil {
 		outcome = err.Error()
 		return nil, err
@@ -140,10 +124,6 @@ func (s *Services) GetLeases(ctx context.Context) (map[string]LeaseDTO, error) {
 	for _, l := range leases {
 		leasePath := l.Repository + l.Path
 		ret[leasePath] = LeaseDTO{KeyID: l.KeyID, LeasePath: leasePath, Expires: l.Expiration.String(), Hostname: l.Hostname}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	return ret, nil
@@ -158,13 +138,7 @@ func (s *Services) GetLease(ctx context.Context, token string) (*LeaseDTO, error
 	outcome := "success"
 	defer logAction(ctx, "get_lease", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	lease, err := FindLeaseByToken(ctx, tx, token)
+	lease, err := s.Store.FindLeaseByToken(ctx, token)
 	if err != nil {
 		outcome = err.Error()
 		return nil, err
@@ -174,10 +148,6 @@ func (s *Services) GetLease(ctx context.Context, token string) (*LeaseDTO, error
 		err := InvalidLeaseError{}
 		outcome = err.Error()
 		return nil, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	ret := &LeaseDTO{
@@ -198,25 +168,15 @@ func (s *Services) CancelLeases(ctx context.Context, repoPath string) error {
 	outcome := "success"
 	defer logAction(ctx, "cancel_leases", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
 	repo, path, err := gw.SplitLeasePath(repoPath)
 	if err != nil {
 		outcome = err.Error()
 		return err
 	}
 
-	if err := DeleteAllLeasesByRepositoryAndPathPrefix(ctx, tx, repo, path); err != nil {
+	if err := s.Store.DeleteLeasesByRepoAndPathPrefix(ctx, repo, path); err != nil {
 		outcome = err.Error()
 		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	return nil
@@ -231,13 +191,7 @@ func (s *Services) CancelLease(ctx context.Context, token string) error {
 	outcome := "success"
 	defer logAction(ctx, "cancel_lease", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	lease, err := FindLeaseByToken(ctx, tx, token)
+	lease, err := s.Store.FindLeaseByToken(ctx, token)
 	if err != nil {
 		outcome = err.Error()
 		return err
@@ -249,7 +203,7 @@ func (s *Services) CancelLease(ctx context.Context, token string) error {
 		return err
 	}
 
-	if err := DeleteLeaseByToken(ctx, tx, token); err != nil {
+	if err := s.Store.DeleteLeaseByToken(ctx, token); err != nil {
 		outcome = err.Error()
 		return err
 	}
@@ -257,10 +211,6 @@ func (s *Services) CancelLease(ctx context.Context, token string) error {
 	// We don't check the error - if the statistics are missing, the lease
 	// should still be cancelable
 	s.StatsMgr.PopLease(lease.CombinedLeasePath())
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("could not commit transaction: %w", err)
-	}
 
 	return nil
 }
@@ -274,13 +224,7 @@ func (s *Services) CommitLease(ctx context.Context, token, oldRootHash, newRootH
 	outcome := "success"
 	defer logAction(ctx, "commit_lease", &outcome, t0)
 
-	tx, err := s.DB.SQL.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("could not begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	lease, err := FindLeaseByToken(ctx, tx, token)
+	lease, err := s.Store.FindLeaseByToken(ctx, token)
 	if err != nil {
 		outcome = err.Error()
 		return 0, err
@@ -293,7 +237,7 @@ func (s *Services) CommitLease(ctx context.Context, token, oldRootHash, newRootH
 	}
 
 	var finalRev uint64
-	if err := s.DB.WithLock(ctx, lease.Repository, func() error {
+	if err := s.Store.WithLock(ctx, lease.Repository, func() error {
 		var err error
 		leasePath := lease.CombinedLeasePath()
 		finalRev, err = s.Pool.CommitLease(ctx, leasePath, oldRootHash, newRootHash, tag)
@@ -306,17 +250,13 @@ func (s *Services) CommitLease(ctx context.Context, token, oldRootHash, newRootH
 	go func() {
 		plotsErr := s.StatsMgr.UploadStatsPlots(lease.Repository)
 		if plotsErr != nil {
-			gw.LogC(ctx, "actions", gw.LogError).Msgf(plotsErr.Error())
+			gw.LogC(ctx, "actions", gw.LogError).Msg(plotsErr.Error())
 		}
 	}()
 
-	if err := DeleteLeaseByToken(ctx, tx, token); err != nil {
+	if err := s.Store.DeleteLeaseByToken(ctx, token); err != nil {
 		outcome = err.Error()
 		return finalRev, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	return finalRev, nil

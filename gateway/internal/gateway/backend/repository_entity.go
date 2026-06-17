@@ -23,7 +23,7 @@ func CreateRepository(ctx context.Context, tx *sql.Tx, repo Repository) error {
 	t0 := time.Now()
 
 	res, err := tx.ExecContext(ctx,
-		"insert into Repository (Name, Manifest, Enabled) values (?, ?, ?);",
+		rebind("insert into Repository (Name, Manifest, Enabled) values (?, ?, ?);"),
 		repo.Name, repo.Manifest, repo.Enabled)
 	if err != nil {
 		return fmt.Errorf("could not insert new repository: %w", err)
@@ -46,7 +46,7 @@ func UpdateRepository(ctx context.Context, tx *sql.Tx, repo Repository) error {
 	t0 := time.Now()
 
 	res, err := tx.ExecContext(ctx,
-		"update Repository set Manifest = ?, Enabled = ? where Name = ?;",
+		rebind("update Repository set Manifest = ?, Enabled = ? where Name = ?;"),
 		repo.Manifest, repo.Enabled, repo.Name)
 	if err != nil {
 		return fmt.Errorf("could not update repository: %w", err)
@@ -98,7 +98,7 @@ func FindRepositoryByName(ctx context.Context, tx *sql.Tx, name string) (*Reposi
 
 	rows, err := tx.QueryContext(
 		ctx,
-		"select * from Repository where Name = ?;", name)
+		rebind("select * from Repository where Name = ?;"), name)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
