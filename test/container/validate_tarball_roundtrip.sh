@@ -216,6 +216,21 @@ validate_subtree() {
         log_info "   local == http  : FAIL"
         [ "$VERBOSE" -eq 1 ] && diff -u "$d/ct.list" "$d/lc.list" | head -40
     fi
+
+    # gzip output (-z): must be a valid gzip, reproducible across runs (no
+    # embedded timestamp), and wrap byte-identical tar content.
+    sudo cvmfs_swissknife create-tarball -r "$store" -p "$subpath" \
+        -o "$d/a.tar.gz" -z -l "$WORK_DIR"
+    sudo cvmfs_swissknife create-tarball -r "$store" -p "$subpath" \
+        -o "$d/b.tar.gz" -z -l "$WORK_DIR"
+    if gzip -t "$d/a.tar.gz" 2>/dev/null \
+       && cmp -s "$d/a.tar.gz" "$d/b.tar.gz" \
+       && zcat "$d/a.tar.gz" | cmp -s - "$d/local.tar"; then
+        log_info "   gzip (-z)      : PASS (valid, reproducible, same tar)"
+    else
+        HAS_DIFF=1
+        log_info "   gzip (-z)      : FAIL"
+    fi
 }
 
 # ── argument parsing ─────────────────────────────────────────────────────────

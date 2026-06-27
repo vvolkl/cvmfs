@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <clocale>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -36,10 +37,20 @@ using namespace std;  // NOLINT
 
 namespace {
 
-const unsigned kMaxExportWorkers = 8;
+// Safety cap on fetch workers; the effective default is the CPU core count and
+// can be overridden with -j.
+const unsigned kDefaultMaxWorkers = 64;
 const unsigned kWorkerQueueFactor = 8;
 const size_t kIoBufferSize = 256 * 1024;
-const size_t kSmallFileThreshold = 256 * 1024;
+// Upper bound for keeping a (whole or chunked) file's payload in memory on the
+// local path, which decompresses straight into a growing buffer. Larger files
+// use per-object temp files to bound RAM. 4 MiB matches the default minimum
+// chunk size, so virtually all non-chunked files stay in memory. RAM in flight
+// is bounded by this times the scheduling queue depth (workers * factor). The
+// HTTP path is separately bounded by MemSink's download cap (see below).
+const size_t kLocalInMemoryThreshold = 4 * 1024 * 1024;
+// libarchive's default tar block is 10 KiB; a larger block cuts write syscalls.
+const size_t kTarBlockSize = 1024 * 1024;
 
 void LogCreateTarballError(const string &message) {
   LogCvmfs(kLogCvmfs, kLogStderr, "%s", message.c_str());
@@ -98,38 +109,6 @@ PathString MakeCatalogPath(const string &repo_path) {
     result.Assign(repo_path.data(), repo_path.length());
   }
   return result;
-}
-
-
-bool CopyPathToFile(const string &source_path, FILE *destination,
-                   string *error) {
-  const int fd_source = open(source_path.c_str(), O_RDONLY);
-  if (fd_source < 0) {
-    *error = "failed to open temporary payload '" + source_path + "'";
-    return false;
-  }
-
-  unsigned char buffer[kIoBufferSize];
-  bool success = true;
-  while (true) {
-    const ssize_t bytes_read = SafeRead(fd_source, buffer, sizeof(buffer));
-    if (bytes_read < 0) {
-      *error = "failed to read temporary payload '" + source_path + "'";
-      success = false;
-      break;
-    }
-    if (bytes_read == 0) {
-      break;
-    }
-    if (!SafeWrite(fileno(destination), buffer, bytes_read)) {
-      *error = "failed to write assembled payload data";
-      success = false;
-      break;
-    }
-  }
-
-  close(fd_source);
-  return success;
 }
 
 
@@ -342,21 +321,48 @@ bool EnumerateSubtree(catalog::SimpleCatalogManager *catalog_manager,
 }
 
 
+// One contiguous piece of a file's payload, written to the archive in order.
+// Exactly one of mem_data / file_path is populated: small payloads are held in
+// memory, larger ones are staged in a temp file and streamed.
+struct PayloadSegment {
+  PayloadSegment() : mem_data(NULL), mem_size(0) { }
+  unsigned char *mem_data;  // owned by the enclosing FetchResult
+  size_t mem_size;
+  string file_path;         // temp file, streamed to the archive then unlinked
+};
+
+
 struct FetchResult {
-  FetchResult() : sequence(0), success(false), mem_data(NULL), mem_size(0) { }
-  ~FetchResult() { free(mem_data); }
+  FetchResult() : sequence(0), success(false) { }
+  // Frees only in-memory buffers; temp files are unlinked explicitly by the
+  // writer (on success) or FreeSegments (on error / when pending).
+  ~FetchResult() {
+    for (size_t i = 0; i < segments.size(); ++i)
+      free(segments[i].mem_data);
+  }
   size_t sequence;
   bool success;
-  string payload_path;
-  // In-memory payload for small files (avoids temp file round-trip)
-  unsigned char *mem_data;
-  size_t mem_size;
+  vector<PayloadSegment> segments;  // payload pieces, in write order
   string error;
 
  private:
   FetchResult(const FetchResult &);
   FetchResult &operator=(const FetchResult &);
 };
+
+
+// Release every segment's resources: free memory buffers and unlink temp files.
+void FreeSegments(vector<PayloadSegment> *segments) {
+  for (size_t i = 0; i < segments->size(); ++i) {
+    free((*segments)[i].mem_data);
+    (*segments)[i].mem_data = NULL;
+    if (!(*segments)[i].file_path.empty()) {
+      unlink((*segments)[i].file_path.c_str());
+      (*segments)[i].file_path.clear();
+    }
+  }
+  segments->clear();
+}
 
 
 
@@ -388,6 +394,10 @@ class PayloadFetcher {
   virtual bool Fetch(const shash::Any &object_hash,
                      string *payload_path,
                      string *error) = 0;
+  // Largest object this fetcher will keep in memory (vs. staging a temp file).
+  // The default is bounded by MemSink's in-memory download cap, which the HTTP
+  // fetcher's Reserve()-based download cannot exceed.
+  virtual size_t MaxInMemorySize() const { return cvmfs::MemSink::kMaxMemSize; }
   // Fetch object into memory. Returns true on success with data/size set.
   // Default falls back to Fetch() + read + unlink.
   virtual bool FetchMem(const shash::Any &object_hash,
@@ -429,6 +439,10 @@ class LocalPayloadFetcher : public PayloadFetcher {
   LocalPayloadFetcher(const string &repository_path, const string &tmp_dir)
       : fetcher_(repository_path, tmp_dir)
       , base_path_(repository_path) { }
+
+  // The local path decompresses straight into a growing buffer (no MemSink
+  // download cap), so larger files can stay in memory and skip temp files.
+  virtual size_t MaxInMemorySize() const { return kLocalInMemoryThreshold; }
 
   virtual bool Fetch(const shash::Any &object_hash,
                      string *payload_path,
@@ -559,10 +573,8 @@ PayloadFetcher *CreatePayloadFetcher(const FetcherConfig &config) {
 
 bool PrepareChunkedPayload(catalog::SimpleCatalogManager *catalog_manager,
                            PayloadFetcher *fetcher,
-                           const FetcherConfig &fetcher_config,
                            const TarEntry &entry,
-                           const string &tmp_dir,
-                           string *payload_path,
+                           vector<PayloadSegment> *segments,
                            string *error) {
   FileChunkList chunks;
   if (!catalog_manager->ListFileChunks(MakeCatalogPath(entry.repo_path),
@@ -587,136 +599,57 @@ bool PrepareChunkedPayload(catalog::SimpleCatalogManager *catalog_manager,
     return false;
   }
 
-  // Fetch all chunks (in parallel for multi-chunk files)
-  vector<string> chunk_paths(chunks.size());
-  bool success = true;
-
-  if (chunks.size() > 1) {
-    // Parallel fetch: each thread gets its own fetcher instance
-    struct ChunkFetchArg {
-      const FetcherConfig *config;
-      const FileChunk *chunk;
-      string *result_path;
-      string error;
-      bool success;
-    };
-
-    vector<ChunkFetchArg> args(chunks.size());
-    vector<pthread_t> threads(chunks.size());
-    for (size_t i = 0; i < chunks.size(); ++i) {
-      args[i].config = &fetcher_config;
-      args[i].chunk = chunks.AtPtr(i);
-      args[i].result_path = &chunk_paths[i];
-      args[i].success = false;
-    }
-
-    struct ChunkFetchHelper {
-      static void *Run(void *data) {
-        ChunkFetchArg *arg = reinterpret_cast<ChunkFetchArg *>(data);
-        UniquePtr<PayloadFetcher> f(CreatePayloadFetcher(*arg->config));
-        arg->success = f->Fetch(arg->chunk->content_hash(),
-                                arg->result_path, &arg->error);
-        return NULL;
-      }
-    };
-
-    for (size_t i = 0; i < chunks.size(); ++i) {
-      const int retval = pthread_create(&threads[i], NULL,
-                                        &ChunkFetchHelper::Run, &args[i]);
-      if (retval != 0) {
-        // Fall back: join already-started threads and clean up
-        for (size_t j = 0; j < i; ++j) {
-          pthread_join(threads[j], NULL);
-          if (!chunk_paths[j].empty()) unlink(chunk_paths[j].c_str());
-        }
-        *error = "failed to start chunk fetch thread for '" + entry.repo_path
-                 + "'";
-        return false;
-      }
-    }
-
-    for (size_t i = 0; i < chunks.size(); ++i) {
-      pthread_join(threads[i], NULL);
-      if (!args[i].success && success) {
-        *error = args[i].error;
-        success = false;
-      }
-    }
-
-    if (!success) {
-      for (size_t i = 0; i < chunk_paths.size(); ++i) {
-        if (!chunk_paths[i].empty()) unlink(chunk_paths[i].c_str());
-      }
-      return false;
-    }
-  } else {
-    // Single chunk: fetch directly with the caller's fetcher
-    if (!fetcher->Fetch(chunks.AtPtr(0)->content_hash(),
-                        &chunk_paths[0], error)) {
+  // Fetch each chunk as its own payload segment, in order. The serial writer
+  // streams the segments straight into the archive, so there is no assembled
+  // temp file (which would add a full write+read pass over the whole file).
+  // Small chunked files stay in memory; large ones use per-chunk temp files to
+  // bound RAM. Fetching is sequential -- cross-file parallelism from the worker
+  // pool keeps cores busy for the typical many-file export.
+  const bool to_memory = (entry.dirent.size() <= fetcher->MaxInMemorySize());
+  segments->resize(chunks.size());
+  for (size_t i = 0; i < chunks.size(); ++i) {
+    const shash::Any chunk_hash = chunks.AtPtr(i)->content_hash();
+    const bool ok = to_memory
+        ? fetcher->FetchMem(chunk_hash, &(*segments)[i].mem_data,
+                            &(*segments)[i].mem_size, error)
+        : fetcher->Fetch(chunk_hash, &(*segments)[i].file_path, error);
+    if (!ok) {
+      FreeSegments(segments);
       return false;
     }
   }
-
-  // Assemble fetched chunks into a single temp file in order
-  FILE *assembled = CreateTempFile(tmp_dir + "/create_tarball_chunked_"
-                                   + StringifyInt(entry.sequence),
-                                   0600, "w", payload_path);
-  if (assembled == NULL) {
-    for (size_t i = 0; i < chunk_paths.size(); ++i) {
-      if (!chunk_paths[i].empty()) unlink(chunk_paths[i].c_str());
-    }
-    *error = "failed to create temporary payload for '" + entry.repo_path + "'";
-    return false;
-  }
-
-  for (size_t i = 0; i < chunk_paths.size(); ++i) {
-    if (!CopyPathToFile(chunk_paths[i], assembled, error)) {
-      unlink(chunk_paths[i].c_str());
-      for (size_t j = i + 1; j < chunk_paths.size(); ++j) {
-        if (!chunk_paths[j].empty()) unlink(chunk_paths[j].c_str());
-      }
-      fclose(assembled);
-      unlink(payload_path->c_str());
-      payload_path->clear();
-      return false;
-    }
-    unlink(chunk_paths[i].c_str());
-  }
-
-  fclose(assembled);
   return true;
 }
 
 
 bool PreparePayload(catalog::SimpleCatalogManager *catalog_manager,
                     PayloadFetcher *fetcher,
-                    const FetcherConfig &fetcher_config,
                     const TarEntry &entry,
-                    const string &tmp_dir,
-                    string *payload_path,
-                    unsigned char **mem_data,
-                    size_t *mem_size,
+                    vector<PayloadSegment> *segments,
                     string *error) {
-  *mem_data = NULL;
-  *mem_size = 0;
+  segments->clear();
   if (!entry.dirent.IsRegular() || entry.is_hardlink) {
-    payload_path->clear();
     return true;
   }
   if (entry.dirent.IsChunkedFile()) {
-    return PrepareChunkedPayload(catalog_manager, fetcher, fetcher_config,
-                                 entry, tmp_dir, payload_path, error);
+    return PrepareChunkedPayload(catalog_manager, fetcher, entry, segments,
+                                 error);
   }
   if (entry.dirent.checksum().IsNull()) {
     *error = "regular file has no content hash: " + entry.repo_path;
     return false;
   }
-  // Use in-memory path for small files to avoid temp file round-trip
-  if (entry.dirent.size() <= kSmallFileThreshold) {
-    return fetcher->FetchMem(entry.dirent.checksum(), mem_data, mem_size,
-                             error);
+  PayloadSegment seg;
+  const bool ok = (entry.dirent.size() <= fetcher->MaxInMemorySize())
+      ? fetcher->FetchMem(entry.dirent.checksum(), &seg.mem_data, &seg.mem_size,
+                          error)
+      : fetcher->Fetch(entry.dirent.checksum(), &seg.file_path, error);
+  if (!ok) {
+    free(seg.mem_data);
+    return false;
   }
-  return fetcher->Fetch(entry.dirent.checksum(), payload_path, error);
+  segments->push_back(seg);
+  return true;
 }
 
 
@@ -768,12 +701,10 @@ class PayloadPipeline {
  public:
   PayloadPipeline(const FetcherConfig &config,
                   catalog::SimpleCatalogManager *catalog_manager,
-                  const string &tmp_dir,
                   const unsigned num_workers,
                   const unsigned queue_limit)
       : config_(config)
       , catalog_manager_(catalog_manager)
-      , tmp_dir_(tmp_dir)
       , queue_(queue_limit)
       , started_(false)
       , active_workers_(0)
@@ -872,10 +803,7 @@ class PayloadPipeline {
       result->sequence = task->entry->sequence;
       if (!IsCancelled()) {
         result->success = PreparePayload(catalog_manager_, fetcher.weak_ref(),
-                                         config_,
-                                         *task->entry, tmp_dir_,
-                                         &result->payload_path,
-                                         &result->mem_data, &result->mem_size,
+                                         *task->entry, &result->segments,
                                          &result->error);
       } else {
         result->success = false;
@@ -901,9 +829,7 @@ class PayloadPipeline {
     pthread_mutex_lock(&lock_);
     map<size_t, FetchResult *>::iterator i = results_.begin();
     for (; i != results_.end(); ++i) {
-      if (!i->second->payload_path.empty()) {
-        unlink(i->second->payload_path.c_str());
-      }
+      FreeSegments(&i->second->segments);
       delete i->second;
     }
     results_.clear();
@@ -912,7 +838,6 @@ class PayloadPipeline {
 
   const FetcherConfig config_;
   catalog::SimpleCatalogManager *catalog_manager_;
-  const string tmp_dir_;
   Tube<FetchTask> queue_;
   vector<pthread_t> workers_;
   bool started_;
@@ -925,11 +850,95 @@ class PayloadPipeline {
 };
 
 
+// Streaming gzip output filter backed by cvmfs's zlib, used as a libarchive
+// write callback. We do not use libarchive's own gzip filter: in the cvmfs
+// externals build it falls back to spawning an external gzip program (an extra
+// runtime dependency whose embedded timestamp would also break reproducibility).
+// zlib's default gzip header carries mtime=0 and OS=unknown, so for a fixed zlib
+// build and compression level the output is byte-reproducible -- the property a
+// CVMFS-backed registry needs to derive a stable blob digest.
+struct GzipWriter {
+  explicit GzipWriter(const string &p) : path(p), file(NULL), ok(true) {
+    memset(&strm, 0, sizeof(strm));
+  }
+  string path;
+  FILE *file;
+  z_stream strm;
+  bool ok;
+  unsigned char outbuf[kIoBufferSize];
+};
+
+int GzipWriterOpen(struct archive *, void *data) {
+  GzipWriter *w = reinterpret_cast<GzipWriter *>(data);
+  w->file = fopen(w->path.c_str(), "w");
+  if (w->file == NULL) {
+    w->ok = false;
+    return ARCHIVE_FATAL;
+  }
+  // windowBits 15 + 16 selects gzip framing around the deflate stream.
+  if (deflateInit2(&w->strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8,
+                   Z_DEFAULT_STRATEGY) != Z_OK) {
+    fclose(w->file);
+    w->file = NULL;
+    w->ok = false;
+    return ARCHIVE_FATAL;
+  }
+  return ARCHIVE_OK;
+}
+
+la_ssize_t GzipWriterWrite(struct archive *, void *data, const void *buffer,
+                           size_t length) {
+  GzipWriter *w = reinterpret_cast<GzipWriter *>(data);
+  w->strm.next_in =
+      const_cast<Bytef *>(reinterpret_cast<const Bytef *>(buffer));
+  w->strm.avail_in = length;
+  do {
+    w->strm.next_out = w->outbuf;
+    w->strm.avail_out = sizeof(w->outbuf);
+    deflate(&w->strm, Z_NO_FLUSH);  // no error possible with valid state/buffers
+    const size_t produced = sizeof(w->outbuf) - w->strm.avail_out;
+    if ((produced > 0) && !SafeWrite(fileno(w->file), w->outbuf, produced)) {
+      w->ok = false;
+      return -1;
+    }
+  } while (w->strm.avail_out == 0);
+  return static_cast<la_ssize_t>(length);
+}
+
+int GzipWriterClose(struct archive *, void *data) {
+  GzipWriter *w = reinterpret_cast<GzipWriter *>(data);
+  if (w->file == NULL) {
+    return w->ok ? ARCHIVE_OK : ARCHIVE_FATAL;
+  }
+  int z_ret;
+  do {
+    w->strm.next_out = w->outbuf;
+    w->strm.avail_out = sizeof(w->outbuf);
+    z_ret = deflate(&w->strm, Z_FINISH);
+    const size_t produced = sizeof(w->outbuf) - w->strm.avail_out;
+    if ((produced > 0) && !SafeWrite(fileno(w->file), w->outbuf, produced)) {
+      w->ok = false;
+      break;
+    }
+  } while (z_ret == Z_OK);
+  if (z_ret != Z_STREAM_END) {
+    w->ok = false;
+  }
+  deflateEnd(&w->strm);
+  if (fclose(w->file) != 0) {
+    w->ok = false;
+  }
+  w->file = NULL;
+  return w->ok ? ARCHIVE_OK : ARCHIVE_FATAL;
+}
+
+
 bool WriteTarArchive(const string &output_path,
                      vector<TarEntry> *entries,
                      const FetcherConfig &fetcher_config,
                      catalog::SimpleCatalogManager *catalog_manager,
-                     const string &tmp_dir,
+                     const unsigned requested_workers,
+                     const bool compress,
                      string *error) {
   struct archive *archive = archive_write_new();
   if (archive == NULL) {
@@ -949,7 +958,25 @@ bool WriteTarArchive(const string &output_path,
   // call only returns ARCHIVE_OK once the locale's charset is UTF-8), so a
   // warning here is non-fatal.
   archive_write_set_options(archive, "hdrcharset=UTF-8");
-  if (archive_write_open_filename(archive, output_path.c_str()) != ARCHIVE_OK) {
+  // Larger output blocks reduce write syscalls on big archives; pad only the
+  // final tar record (512 B) rather than the full block, so small archives are
+  // not bloated and the bytes match regardless of the output filter.
+  archive_write_set_bytes_per_block(archive, kTarBlockSize);
+  archive_write_set_bytes_in_last_block(archive, 1);
+
+  // When compression is requested, route the (uncompressed) tar through our own
+  // deterministic gzip filter; otherwise write straight to the output file.
+  UniquePtr<GzipWriter> gzip_writer;
+  int open_retval;
+  if (compress) {
+    gzip_writer = new GzipWriter(output_path);
+    open_retval = archive_write_open(archive, gzip_writer.weak_ref(),
+                                     GzipWriterOpen, GzipWriterWrite,
+                                     GzipWriterClose);
+  } else {
+    open_retval = archive_write_open_filename(archive, output_path.c_str());
+  }
+  if (open_retval != ARCHIVE_OK) {
     *error = string("failed to open output tarball: ")
              + archive_error_string(archive);
     archive_write_free(archive);
@@ -970,14 +997,18 @@ bool WriteTarArchive(const string &output_path,
     }
   }
 
-  const unsigned num_workers = std::min(
-      static_cast<unsigned>(payload_jobs),
-      std::min(GetNumberOfCpuCores(), kMaxExportWorkers));
+  // Decompression is CPU-bound and dominates the local export path, so default
+  // to one worker per core (overridable with -j), capped for sanity and never
+  // more than the number of payload jobs.
+  unsigned num_workers = (requested_workers > 0) ? requested_workers
+                                                 : GetNumberOfCpuCores();
+  num_workers = std::min(num_workers, kDefaultMaxWorkers);
+  num_workers = std::min(num_workers, static_cast<unsigned>(payload_jobs));
   const unsigned queue_limit =
       std::max(1U, num_workers * kWorkerQueueFactor);
   UniquePtr<PayloadPipeline> pipeline;
   if (num_workers > 0) {
-    pipeline = new PayloadPipeline(fetcher_config, catalog_manager, tmp_dir,
+    pipeline = new PayloadPipeline(fetcher_config, catalog_manager,
                                    num_workers, queue_limit);
     if (!pipeline->Start(error)) {
       archive_entry_free(archive_entry);
@@ -1002,71 +1033,67 @@ bool WriteTarArchive(const string &output_path,
     }
 
     TarEntry &entry = (*entries)[i];
-    string payload_path;
-    unsigned char *mem_data = NULL;
-    size_t mem_size = 0;
     FetchResult *result = NULL;
     if (entry.requires_payload) {
       result = pipeline->WaitFor(entry.sequence);
       --inflight;
       if (!result->success) {
         *error = result->error;
-        delete result;
+        delete result;  // no segments produced on failure
         success = false;
         break;
       }
-      payload_path = result->payload_path;
-      mem_data = result->mem_data;
-      mem_size = result->mem_size;
-      // Prevent FetchResult destructor from freeing mem_data we took
-      result->mem_data = NULL;
-      result->mem_size = 0;
     }
 
-    if (!PopulateArchiveEntry(entry, archive_entry, error)) {
-      if (!payload_path.empty()) unlink(payload_path.c_str());
-      free(mem_data);
-      delete result;
-      success = false;
-      break;
-    }
-    if (archive_write_header(archive, archive_entry) != ARCHIVE_OK) {
-      *error = string("failed to write tar header for '") + entry.tar_path
-               + "': " + archive_error_string(archive);
-      if (!payload_path.empty()) unlink(payload_path.c_str());
-      free(mem_data);
-      delete result;
+    if (!PopulateArchiveEntry(entry, archive_entry, error)
+        || (archive_write_header(archive, archive_entry) != ARCHIVE_OK)) {
+      if (error->empty()) {
+        *error = string("failed to write tar header for '") + entry.tar_path
+                 + "': " + archive_error_string(archive);
+      }
+      if (result != NULL) {
+        FreeSegments(&result->segments);
+        delete result;
+      }
       success = false;
       break;
     }
 
-    // Write payload: prefer in-memory data, fall back to file path
+    // Stream the payload segments into the archive in order. mem segments are
+    // written directly; file segments are streamed and unlinked.
     bool write_ok = true;
-    if (mem_data != NULL) {
-      la_ssize_t bytes_written = archive_write_data(archive, mem_data,
-                                                     mem_size);
-      if (bytes_written < 0
-          || static_cast<size_t>(bytes_written) != mem_size) {
-        *error = string("failed to write tar payload from memory: ")
-                 + archive_error_string(archive);
-        write_ok = false;
+    if (result != NULL) {
+      for (size_t s = 0; write_ok && (s < result->segments.size()); ++s) {
+        PayloadSegment &seg = result->segments[s];
+        if (seg.mem_data != NULL) {
+          const la_ssize_t n =
+              archive_write_data(archive, seg.mem_data, seg.mem_size);
+          if ((n < 0) || (static_cast<size_t>(n) != seg.mem_size)) {
+            *error = string("failed to write tar payload from memory: ")
+                     + archive_error_string(archive);
+            write_ok = false;
+          }
+          free(seg.mem_data);
+          seg.mem_data = NULL;
+        } else if (!seg.file_path.empty()) {
+          if (!WriteArchiveDataFromPath(archive, seg.file_path, error)) {
+            write_ok = false;
+          }
+          unlink(seg.file_path.c_str());
+          seg.file_path.clear();
+        }
       }
-      free(mem_data);
-      mem_data = NULL;
-    } else if (!payload_path.empty()) {
-      if (!WriteArchiveDataFromPath(archive, payload_path, error)) {
-        write_ok = false;
+      // On failure, release any segments not yet streamed.
+      if (!write_ok) {
+        FreeSegments(&result->segments);
       }
-      unlink(payload_path.c_str());
+      delete result;
     }
 
     if (!write_ok) {
-      delete result;
       success = false;
       break;
     }
-
-    delete result;
   }
 
   if (pipeline.IsValid()) {
@@ -1102,7 +1129,11 @@ ParameterList CommandCreateTarball::GetParams() const {
   r.push_back(Parameter::Optional('l', "temporary directory"));
   r.push_back(Parameter::Optional('h', "root hash (other than trunk)"));
   r.push_back(Parameter::Optional('@', "proxy url"));
+  r.push_back(Parameter::Optional(
+      'j', "number of parallel fetch workers (default: number of CPU cores)"));
   r.push_back(Parameter::Switch('L', "follow HTTP redirects"));
+  r.push_back(Parameter::Switch(
+      'z', "gzip-compress the output tarball (reproducible, no timestamp)"));
   return r;
 }
 
@@ -1121,6 +1152,10 @@ int CommandCreateTarball::Main(const ArgumentList &args) {
                              : "/tmp";
   const bool follow_redirects = (args.count('L') > 0);
   const string proxy = (args.count('@') > 0) ? *args.find('@')->second : "";
+  const unsigned num_workers = (args.count('j') > 0)
+      ? static_cast<unsigned>(String2Uint64(*args.find('j')->second))
+      : 0;
+  const bool compress = (args.count('z') > 0);
 
   if (DirectoryExists(repo_keys)) {
     repo_keys = JoinStrings(FindFilesBySuffix(repo_keys, ".pub"), ":");
@@ -1251,7 +1286,7 @@ int CommandCreateTarball::Main(const ArgumentList &args) {
     fetcher_config.signature_manager = signature_manager();
   }
   if (!WriteTarArchive(output_path, &entries, fetcher_config, &catalog_manager,
-                       tmp_dir, &error)) {
+                       num_workers, compress, &error)) {
     LogCreateTarballError(error);
     return 1;
   }
