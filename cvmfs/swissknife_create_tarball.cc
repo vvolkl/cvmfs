@@ -5,11 +5,14 @@
 #include "swissknife_create_tarball.h"
 
 #include <fcntl.h>
+#include <langinfo.h>
 #include <pthread.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <clocale>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -40,6 +43,29 @@ const size_t kSmallFileThreshold = 256 * 1024;
 
 void LogCreateTarballError(const string &message) {
   LogCvmfs(kLogCvmfs, kLogStderr, "%s", message.c_str());
+}
+
+
+// libarchive transcodes tar header names (paths, symlink/hardlink targets) from
+// the process locale's charset to UTF-8 for pax extended headers. CVMFS stores
+// those bytes as UTF-8 already, but swissknife is commonly launched via sudo/su,
+// which reset the locale to C/POSIX (charset ASCII); libarchive then aborts on
+// any non-ASCII name (e.g. localized certificate symlinks shipped in container
+// images). Forcing a UTF-8 LC_CTYPE makes the conversion the identity. Only
+// LC_CTYPE is touched so numeric/collation behaviour elsewhere is unaffected.
+void EnsureUtf8CType() {
+  setlocale(LC_CTYPE, "");  // honour the environment first
+  const char *codeset = nl_langinfo(CODESET);
+  if ((codeset != NULL) && (strcasecmp(codeset, "UTF-8") == 0)) {
+    return;
+  }
+  const char *kUtf8Locales[] = {"C.UTF-8", "C.utf8", "en_US.UTF-8",
+                                "en_US.utf8"};
+  for (size_t i = 0; i < sizeof(kUtf8Locales) / sizeof(kUtf8Locales[0]); ++i) {
+    if (setlocale(LC_CTYPE, kUtf8Locales[i]) != NULL) {
+      return;
+    }
+  }
 }
 
 
@@ -228,10 +254,20 @@ bool EnumerateSubtree(catalog::SimpleCatalogManager *catalog_manager,
                       string *error) {
   // Use an explicit stack to avoid deep recursion on large directory trees.
   // Each frame holds a sorted, filtered listing and the current iteration index.
+  //
+  // Hardlink group ids are catalog-local (WritableCatalog::GetMaxLinkId), so the
+  // same id is reused independently in every (nested) catalog. Because a subtree
+  // export crosses nested catalog boundaries, a single global dedup map keyed by
+  // group id would conflate unrelated hardlink groups from different catalogs and
+  // emit wrong hardlink targets. cvmfs forbids hardlinks that span directories
+  // (see SyncMediator "Hardlinks across directories"), so every member of a group
+  // is a sibling: scoping the dedup map per directory frame is both correct and
+  // collision-free.
   struct StackFrame {
     string repo_path;
     string tar_path;
     catalog::DirectoryEntryList children;
+    map<uint32_t, string> hardlink_targets;
     size_t index;
     StackFrame(const string &rp, const string &tp)
         : repo_path(rp), tar_path(tp), index(0) { }
@@ -282,7 +318,7 @@ bool EnumerateSubtree(catalog::SimpleCatalogManager *catalog_manager,
     const string child_tar_path = JoinTarPath(frame->tar_path, child_name);
 
     if (!AppendTarEntry(child_repo_path, child_tar_path, child,
-                        hardlink_targets, entries, error)) {
+                        &frame->hardlink_targets, entries, error)) {
       for (size_t i = 0; i < stack.size(); ++i) delete stack[i];
       return false;
     }
@@ -902,8 +938,18 @@ bool WriteTarArchive(const string &output_path,
   }
 
   if ((archive_write_add_filter_none(archive) != ARCHIVE_OK)
-      || (archive_write_set_format_pax_restricted(archive) != ARCHIVE_OK)
-      || (archive_write_open_filename(archive, output_path.c_str()) != ARCHIVE_OK)) {
+      || (archive_write_set_format_pax_restricted(archive) != ARCHIVE_OK)) {
+    *error = string("failed to configure tar writer: ")
+             + archive_error_string(archive);
+    archive_write_free(archive);
+    return false;
+  }
+  // Belt-and-suspenders: ask libarchive to treat header bytes as UTF-8. The
+  // actual guarantee comes from EnsureUtf8CType() forcing a UTF-8 locale (this
+  // call only returns ARCHIVE_OK once the locale's charset is UTF-8), so a
+  // warning here is non-fatal.
+  archive_write_set_options(archive, "hdrcharset=UTF-8");
+  if (archive_write_open_filename(archive, output_path.c_str()) != ARCHIVE_OK) {
     *error = string("failed to open output tarball: ")
              + archive_error_string(archive);
     archive_write_free(archive);
@@ -1062,6 +1108,8 @@ ParameterList CommandCreateTarball::GetParams() const {
 
 
 int CommandCreateTarball::Main(const ArgumentList &args) {
+  EnsureUtf8CType();
+
   const string repository_arg = *args.find('r')->second;
   string subpath = MakeCanonicalPath(*args.find('p')->second);
   const string output_path = MakeCanonicalPath(*args.find('o')->second);

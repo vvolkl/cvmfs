@@ -89,8 +89,5 @@ cvmfs_server_create_tarball() {
 
   $user_shell "$create_tarball_command"
   local retval=$?
-  if [ $retval -eq 2 ]; then
-    die "Create-tarball reached the current swissknife scaffold, but tarball emission is not implemented yet\n\nExecuted Command:\n$create_tarball_command"
-  fi
   [ $retval -eq 0 ] || die "Create-tarball failed\n\nExecuted Command:\n$create_tarball_command"
 }

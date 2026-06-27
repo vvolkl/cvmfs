@@ -220,6 +220,59 @@ TEST(T_SwissknifeCreateTarballHelpers,
   archive_entry_free(archive_entry);
 }
 
+TEST(T_SwissknifeCreateTarballHelpers,
+     HardlinkGroupsAreScopedPerDirectory) {
+  // Hardlink group ids are catalog-local and are reused across (nested)
+  // catalogs. EnumerateSubtree therefore uses a fresh dedup map per directory
+  // frame so that a colliding group id in a different directory/catalog is not
+  // conflated into a bogus hardlink. This test mirrors that contract: the same
+  // group id (42) appears in two different directories, each with its own map.
+  string error;
+
+  map<uint32_t, string> dir_one_targets;
+  vector<TarEntry> entries;
+  catalog::DirectoryEntry one_a = catalog::DirectoryEntryTestFactory::RegularFile(
+      "a", 7, MakeHash("8888888888888888888888888888888888888888"));
+  one_a.set_linkcount(2);
+  one_a.set_hardlink_group(42);
+  ASSERT_TRUE(AppendTarEntry("/dir_one/a", "dir_one/a", one_a,
+                             &dir_one_targets, &entries, &error)) << error;
+  catalog::DirectoryEntry one_b = catalog::DirectoryEntryTestFactory::RegularFile(
+      "b", 7, MakeHash("9999999999999999999999999999999999999999"));
+  one_b.set_linkcount(2);
+  one_b.set_hardlink_group(42);
+  ASSERT_TRUE(AppendTarEntry("/dir_one/b", "dir_one/b", one_b,
+                             &dir_one_targets, &entries, &error)) << error;
+
+  // Second directory: same group id, but a separate per-directory map as
+  // produced by EnumerateSubtree.
+  map<uint32_t, string> dir_two_targets;
+  catalog::DirectoryEntry two_a = catalog::DirectoryEntryTestFactory::RegularFile(
+      "a", 7, MakeHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+  two_a.set_linkcount(2);
+  two_a.set_hardlink_group(42);
+  ASSERT_TRUE(AppendTarEntry("/dir_two/a", "dir_two/a", two_a,
+                             &dir_two_targets, &entries, &error)) << error;
+  catalog::DirectoryEntry two_b = catalog::DirectoryEntryTestFactory::RegularFile(
+      "b", 7, MakeHash("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+  two_b.set_linkcount(2);
+  two_b.set_hardlink_group(42);
+  ASSERT_TRUE(AppendTarEntry("/dir_two/b", "dir_two/b", two_b,
+                             &dir_two_targets, &entries, &error)) << error;
+
+  ASSERT_EQ(4u, entries.size());
+  // First member of each directory carries the payload; the second links to it.
+  EXPECT_TRUE(entries[0].requires_payload);
+  EXPECT_FALSE(entries[0].is_hardlink);
+  EXPECT_TRUE(entries[1].is_hardlink);
+  EXPECT_EQ("dir_one/a", entries[1].hardlink_target);
+  // The collision must NOT make dir_two/a link back into dir_one.
+  EXPECT_TRUE(entries[2].requires_payload);
+  EXPECT_FALSE(entries[2].is_hardlink);
+  EXPECT_TRUE(entries[3].is_hardlink);
+  EXPECT_EQ("dir_two/a", entries[3].hardlink_target);
+}
+
 TEST(T_SwissknifeCreateTarballHelpers, HiddenEntriesAreSkipped) {
   map<uint32_t, string> hardlink_targets;
   vector<TarEntry> entries;
