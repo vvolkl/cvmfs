@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-func ParseImage(image string) (img Image, err error) {
+// parseImageRemote parses a registry-style image reference. The exported
+// ParseImage wrapper (see local_image.go) additionally handles local transports
+// and re-attaches loaded local images.
+func parseImageRemote(image string) (img Image, err error) {
 	url, err := url.Parse(image)
 	if err != nil {
 		return Image{}, err
@@ -16,7 +19,7 @@ func ParseImage(image string) (img Image, err error) {
 		// likely the protocol `https://` is missing in the image string.
 		// worth to try to append it, and re-parse the image
 		image2 := "https://" + image
-		img2, err2 := ParseImage(image2)
+		img2, err2 := parseImageRemote(image2)
 		if err2 == nil {
 			return img2, err2
 		}

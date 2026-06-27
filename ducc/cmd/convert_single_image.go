@@ -45,6 +45,16 @@ var convertSingleImageCmd = &cobra.Command{
 		inputImage := args[0]
 		cvmfsRepo := args[1]
 
+		// Parse the input first so the (skipped-by-default) thin image name is
+		// derived from the resolved registry name rather than the raw argument,
+		// which for local transports (docker-archive:/oci:) is not a valid image
+		// reference.
+		input, err := lib.ParseImage(inputImage)
+		if err != nil {
+			l.LogE(err).Error("Error in parsing the input image")
+			return err
+		}
+
 		if skipLayers {
 			l.Log().Warn("--skip-layers is deprecated and no longer functional: layers will be unpacked regardless. If you only need the flat image, use `docker save` and `cvmfs_server ingest` instead.")
 			skipThinImage = true
@@ -55,7 +65,7 @@ var convertSingleImageCmd = &cobra.Command{
 				skipThinImage = true
 			}
 			// we need a thinImageName to parse the wish
-			thinImageName = inputImage + "_thin"
+			thinImageName = input.WholeName() + "_thin"
 		}
 
 		if skipThinImage == false {
@@ -85,7 +95,6 @@ var convertSingleImageCmd = &cobra.Command{
 		}()
 		defer signal.Stop(sigChan)
 
-		input, err := lib.ParseImage(inputImage)
 		wish, err := lib.CreateWish(input, thinImageName, cvmfsRepo, username, username)
 		if err != nil {
 			l.LogE(err).Error("Error in creating the wish to convert")

@@ -18,10 +18,13 @@
 #      reading the same subtree through the FUSE mount (tree + content).
 #   4. Reports throughput for create-tarball vs. the plain-FUSE-tar baseline.
 #
-# Usage: validate_tarball_roundtrip.sh [options] <image_url> [cvmfs_repo]
+# Usage: validate_tarball_roundtrip.sh [options] <image_ref> [cvmfs_repo]
 #
-#   image_url   URL of the container image
-#               e.g., https://registry.hub.docker.com/library/alpine:latest
+#   image_ref   Container image to convert. Either a registry URL, e.g.
+#                 https://registry.hub.docker.com/library/alpine:latest
+#               or a local source (avoids re-pulling; pull/save once, test often):
+#                 docker-archive:/path/to/image.tar   (from `docker save`)
+#                 oci:/path/to/oci-layout-dir
 #   cvmfs_repo  CVMFS repository name (default: test-roundtrip.cern.ch)
 #
 # Options:
@@ -110,12 +113,12 @@ generate_listing() {
 
 generate_checksums() {
     local dir="$1" output="$2"
-    ( cd "$dir"
-      find . -type f \
+    # Read under sudo: the trees are extracted with `sudo tar`, so members may be
+    # root-owned and (for some images) not world-readable.
+    sudo sh -c "cd '$dir' && find . -type f \
              ! -name '.cvmfscatalog' ! -name '.cvmfsdirtab' \
              ! -name '.cvmfsautocatalog' -print0 \
-        | sort -z | xargs -0 -r sha256sum
-    ) > "$output"
+        | sort -z | xargs -0 -r sha256sum" > "$output"
 }
 
 # Validate one CVMFS subtree against its create-tarball export.
@@ -241,7 +244,12 @@ trap cleanup EXIT HUP INT TERM
 
 WORK_DIR=$(mktemp -d /tmp/validate_tarball_roundtrip.XXXXXX)
 chmod 0777 "$WORK_DIR"
-CVMFS_IMAGE_PATH=$(url_to_cvmfs_image_path "$IMAGE_URL")
+# A local source (docker-archive:/oci:) lets us pull an image once and convert it
+# repeatedly without hitting registry rate limits.
+case "$IMAGE_URL" in
+    docker-archive:*|oci:*|oci-archive:*) IS_LOCAL=1 ;;
+    *) IS_LOCAL=0; CVMFS_IMAGE_PATH=$(url_to_cvmfs_image_path "$IMAGE_URL") ;;
+esac
 
 log_info "Image URL  : $IMAGE_URL"
 log_info "CVMFS repo : $CVMFS_REPO"
@@ -264,9 +272,16 @@ cvmfs_ducc convert-single-image -p "$IMAGE_URL" "$CVMFS_REPO" \
     2>&1 | tee "$WORK_DIR/ducc.log" \
     || die "cvmfs_ducc conversion failed (see $WORK_DIR/ducc.log)"
 
-FLAT_DIR="/cvmfs/$CVMFS_REPO/$CVMFS_IMAGE_PATH"
-[ -e "$FLAT_DIR" ] || die "Expected flat image not found at $FLAT_DIR"
-FLAT_DIR=$(readlink -f "$FLAT_DIR")
+if [ "$IS_LOCAL" -eq 1 ]; then
+    # Local images carry a synthetic name; locate the flat image via .flat/.
+    FLAT_DIR=$(sudo find "/cvmfs/$CVMFS_REPO/.flat" -mindepth 2 -maxdepth 2 \
+        -type d 2>/dev/null | sort | tail -1)
+    [ -n "$FLAT_DIR" ] || die "No flat image found under /cvmfs/$CVMFS_REPO/.flat"
+else
+    FLAT_DIR="/cvmfs/$CVMFS_REPO/$CVMFS_IMAGE_PATH"
+    [ -e "$FLAT_DIR" ] || die "Expected flat image not found at $FLAT_DIR"
+    FLAT_DIR=$(readlink -f "$FLAT_DIR")
+fi
 log_info "Flat image resolved to: $FLAT_DIR"
 
 # ── Step 2: round-trip flat image (and optionally each layer) ────────────────

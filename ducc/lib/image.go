@@ -20,6 +20,7 @@ import (
 
 	"github.com/aoliveti/curling"
 	"github.com/docker/docker/image"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/olekukonko/tablewriter"
 	log "github.com/sirupsen/logrus"
 
@@ -60,6 +61,9 @@ type Image struct {
 	OCIImage         *image.Image
 	ManifestList     *da.ManifestList
 	rawManifestBytes []byte // cached raw wire bytes of the resolved manifest
+	// localImage, when set, makes the manifest/config/layer fetchers read from a
+	// locally-loaded image (docker-archive / OCI layout) instead of a registry.
+	localImage v1.Image
 }
 
 type Credentials struct {
@@ -488,6 +492,20 @@ func (img *Image) GetOCIImage() (config image.Image, err error) {
 		return *img.OCIImage, nil
 	}
 
+	if img.localImage != nil {
+		body, cfgErr := img.localImage.RawConfigFile()
+		if cfgErr != nil {
+			l.LogE(cfgErr).Warning("Impossible to read the local image config, no changes set")
+			return config, cfgErr
+		}
+		if err = json.Unmarshal(body, &config); err != nil {
+			l.LogE(err).Warning("Error in unmarshaling the configuration of the local image")
+			return
+		}
+		img.OCIImage = &config
+		return
+	}
+
 	manifest, err := img.GetManifest()
 	if err != nil {
 		l.LogE(err).Warning("Impossible to retrieve the manifest of the image, not changes set")
@@ -750,12 +768,17 @@ func (i *Image) GetVariantSymlinkTarget(defaultArch string) string {
 }
 
 func (img *Image) getByteManifestList() ([]byte, error) {
+	if img.localImage != nil {
+		return img.localManifestListBytes()
+	}
 	url := img.GetManifestUrl("")
 	return makeGetRequest(url, map[string]string{"Accept": "application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json"})
 }
 
 func (img *Image) getByteManifest(reference string) ([]byte, error) {
-
+	if img.localImage != nil {
+		return img.localImage.RawManifest()
+	}
 	url := img.GetManifestUrl(reference)
 	return makeGetRequest(url, map[string]string{"Accept": "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json"})
 }
@@ -1050,6 +1073,9 @@ func (img *Image) downloadLayer(layer da.Layer, token string) (toSend downloaded
 
 func (img *Image) downloadLayerWithLogger(logger *log.Entry, layer da.Layer, token string) (toSend downloadedLayer, err error) {
 	logger = l.Ensure(logger)
+	if img.localImage != nil {
+		return img.localLayer(layer)
+	}
 	layerUrl := getLayerUrl(img, layer.Digest)
 	if token == "" {
 		token, err = firstRequestForAuth(layerUrl)
