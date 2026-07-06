@@ -56,7 +56,9 @@ if(LibArchive_FOUND)
 else()
   message(STATUS "Building LibArchive from vendored sources.")
   add_library(LibArchive::LibArchive ALIAS archive_static)
-  install(TARGETS archive_static DESTINATION ${EXTERNALS_INSTALL_LOCATION} COMPONENT external_deps EXCLUDE_FROM_ALL)
+  # Install the static lib into lib/ where find_package(LibArchive)'s find_library
+  # (system-fallback path, e.g. BUILTIN_EXTERNALS_EXCLUDE=LibArchive) looks for it.
+  install(TARGETS archive_static ARCHIVE DESTINATION ${EXTERNALS_INSTALL_LOCATION}/lib COMPONENT external_deps EXCLUDE_FROM_ALL)
   install(FILES  ${libarchive_SOURCE_DIR}/libarchive/archive.h ${libarchive_SOURCE_DIR}/libarchive/archive_entry.h   DESTINATION ${EXTERNALS_INSTALL_LOCATION}/include COMPONENT external_deps EXCLUDE_FROM_ALL)
   set(EXTERNALS_INSTALL_TARGETS ${EXTERNALS_INSTALL_TARGETS} "archive_static" PARENT_SCOPE)
 endif()

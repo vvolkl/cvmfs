@@ -61,7 +61,9 @@ else()
 
   add_library(pacparser::pacparser ALIAS pacparser)
 
-  install(TARGETS pacparser DESTINATION ${EXTERNALS_INSTALL_LOCATION} COMPONENT external_deps EXCLUDE_FROM_ALL)
+  # Install the static lib into lib/ where Findpacparser.cmake's find_library
+  # (system-fallback path, e.g. BUILTIN_EXTERNALS_EXCLUDE=pacparser) looks for it.
+  install(TARGETS pacparser ARCHIVE DESTINATION ${EXTERNALS_INSTALL_LOCATION}/lib COMPONENT external_deps EXCLUDE_FROM_ALL)
   install(FILES  ${pacparser_SOURCE_DIR}/src/pacparser.h DESTINATION ${EXTERNALS_INSTALL_LOCATION}/include COMPONENT external_deps EXCLUDE_FROM_ALL)
   set(EXTERNALS_INSTALL_TARGETS ${EXTERNALS_INSTALL_TARGETS} "pacparser" PARENT_SCOPE)
 endif()
