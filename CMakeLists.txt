@@ -443,6 +443,12 @@ if (BUILD_CVMFS OR BUILD_LIBCVMFS OR BUILD_SERVER OR BUILD_SERVER_DEBUG OR
 
   find_package (SHA3 REQUIRED)
   set (INCLUDE_DIRECTORIES ${INCLUDE_DIRECTORIES} ${SHA3_INCLUDE_DIRS})
+
+  # nettle is provided by the externals/libnettle FetchContent module as the
+  # `nettle` static target; it also sets Libnettle_LIBRARIES and
+  # Libnettle_INCLUDE_DIRS. libcvmfs_crypto links it for symmetric crypto and
+  # hashing (see cvmfs/crypto/CMakeLists.txt).
+  set (INCLUDE_DIRECTORIES ${INCLUDE_DIRECTORIES} ${Libnettle_INCLUDE_DIRS})
 endif ()
 
 
