@@ -161,30 +161,37 @@ else ()
   add_library(nettle STATIC EXCLUDE_FROM_ALL ${NETTLE_SOURCES})
   target_compile_definitions(nettle PRIVATE HAVE_CONFIG_H)
   # nettle's sources include "config.h"/"version.h" (generated, in the binary
-  # dir) and their flat sibling headers (in the source dir).
-  target_include_directories(nettle PRIVATE
-    ${nettle_SOURCE_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
+  # dir) and their flat sibling headers (in the source dir). Consumers should
+  # see the installed-style <nettle/...> headers from include/ via the exported
+  # target, regardless of whether we use the system library or the vendored one.
+  target_include_directories(nettle
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
+      $<INSTALL_INTERFACE:include>
+    PRIVATE
+      ${nettle_SOURCE_DIR}
+      ${CMAKE_CURRENT_BINARY_DIR}
   )
   set_target_properties(nettle PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
   # --- public headers for consumers -----------------------------------------
   # cvmfs includes nettle headers as <nettle/md5.h> etc. nettle ships them flat
   # in the source root, so reproduce the installed layout under include/nettle/.
-  # This is nettle's Makefile.in `HEADERS` list plus the generated version.h.
+  # Only install the libnettle headers that are self-contained without the
+  # public-key hogweed/GMP stack: shipping headers such as rsa.h, dsa.h or
+  # bignum.h would advertise APIs that this vendored build does not provide.
+  # The list below is therefore the symmetric/hash subset plus version.h.
   set(NETTLE_PUBLIC_HEADERS
-    aes.h  arcfour.h  arctwo.h  asn1.h  balloon.h
-    base16.h  base64.h  bignum.h  blowfish.h  buffer.h
+    aes.h  arcfour.h  arctwo.h  balloon.h
+    base16.h  base64.h  blowfish.h  buffer.h
     camellia.h  cast128.h  cbc.h  ccm.h  cfb.h
-    chacha-poly1305.h  chacha.h  cmac.h  ctr.h  curve25519.h
-    curve448.h  des.h  drbg-ctr.h  dsa-compat.h  dsa.h  eax.h
-    ecc-curve.h  ecc.h  ecdsa.h  eddsa.h  gcm.h
-    gostdsa.h  gosthash94.h  hkdf.h  hmac.h  knuth-lfib.h
+    chacha-poly1305.h  chacha.h  cmac.h  ctr.h
+    des.h  drbg-ctr.h  eax.h  gcm.h
+    gosthash94.h  hkdf.h  hmac.h  knuth-lfib.h
     macros.h  md2.h  md4.h  md5-compat.h  md5.h
     memops.h  memxor.h  nettle-meta.h  nettle-types.h  nist-keywrap.h
-    ocb.h  pbkdf2.h  pgp.h  pkcs1.h  poly1305.h
-    pss-mgf1.h  pss.h  realloc.h  ripemd160.h  rsa.h
-    salsa20.h  serpent.h  sexp.h  sha.h  sha1.h
+    ocb.h  pbkdf2.h  poly1305.h  realloc.h  ripemd160.h
+    salsa20.h  serpent.h  sha.h  sha1.h
     sha2.h  sha3.h  siv-cmac.h  siv-gcm.h  sm3.h
     sm4.h  streebog.h  twofish.h  umac.h  xts.h
     yarrow.h
