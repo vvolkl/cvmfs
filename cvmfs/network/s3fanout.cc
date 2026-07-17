@@ -42,20 +42,25 @@ static string XmlEscape(const string &input) {
 }
 
 
+string MkPath(const string &bucket, const string &object_key,
+              bool dns_buckets) {
+  if (dns_buckets)
+    return "/" + object_key;
+  if (object_key.empty())
+    return "/" + bucket;
+  return "/" + bucket + "/" + object_key;
+}
+
+
 /**
- * The CanonicalizedResource of an S3 V2 signature.  It must mirror MkUrl():
- * the server rebuilds the resource from the request path, so any difference,
- * down to a trailing slash, yields SignatureDoesNotMatch.
- *
- * With DNS buckets the bucket lives in the hostname and the path is
- * "/" + object_key, so an empty key gives "/<bucket>/".  In path style the
- * path already carries the bucket and an empty key gives "/<bucket>".
+ * The CanonicalizedResource of an S3 V2 signature: the bucket followed by the
+ * request path, plus any subresource.  The bucket is only prepended for DNS
+ * buckets, where it is not part of the path already.
  */
 string MkV2CanonicalResource(const string &bucket, const string &object_key,
                              bool dns_buckets, bool multi_delete) {
-  string resource = "/" + bucket;
-  if (dns_buckets || !object_key.empty())
-    resource += "/" + object_key;
+  string resource = dns_buckets ? "/" + bucket : "";
+  resource += MkPath(bucket, object_key, dns_buckets);
   // V2 requires subresources to be signed; multi-delete posts to "?delete"
   if (multi_delete)
     resource += "?delete";
@@ -741,14 +746,10 @@ bool S3FanoutManager::MkV4Authz(const JobInfo &info,
                        + "x-amz-date:" + timestamp + "\n";
 
   const string scope = date + "/" + config_.region + "/s3/aws4_request";
-  string uri;
-  if (config_.dns_buckets) {
-    uri = string("/") + info.object_key;
-  } else if (info.object_key.empty()) {
-    uri = string("/") + config_.bucket;
-  } else {
-    uri = string("/") + config_.bucket + "/" + info.object_key;
-  }
+  // V4 signs the request path verbatim; the bucket is never prepended because
+  // with DNS buckets it is covered by the signed host header instead.
+  const string uri = MkPath(config_.bucket, info.object_key,
+                            config_.dns_buckets);
 
   // V4 canonical query string: empty for most requests, "delete=" for
   // multi-object delete (the S3 ?delete parameter has no value)

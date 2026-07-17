@@ -172,6 +172,20 @@ struct S3FanOutDnsEntry {
 };  // S3FanOutDnsEntry
 
 
+/**
+ * The path component of a request, and the single source of truth for it: the
+ * URL and the signatures must agree on it down to the trailing slash, or the
+ * server rejects the signature.  Both MkUrl() and the authorization headers
+ * are built from this, so they cannot drift apart.
+ *
+ * With DNS buckets the bucket is in the hostname and the path is just the
+ * object key, so an empty key leaves "/".  In path style the bucket leads the
+ * path and an empty key leaves "/<bucket>", without a trailing slash.
+ */
+std::string MkPath(const std::string &bucket, const std::string &object_key,
+                   bool dns_buckets);
+
+
 class S3FanoutManager : SingleCopy {
  protected:
   typedef SynchronizingCounter<uint32_t> Semaphore;
@@ -266,16 +280,8 @@ class S3FanoutManager : SingleCopy {
   bool MkAzureAuthz(const JobInfo &info,
                     std::vector<std::string> *headers) const;
   std::string MkUrl(const std::string &objkey) const {
-    if (config_.dns_buckets) {
-      return config_.protocol + "://" + complete_hostname_ + "/" + objkey;
-    } else {
-      if (objkey.empty()) {
-        return config_.protocol + "://" + complete_hostname_ + "/"
-               + config_.bucket;
-      }
-      return config_.protocol + "://" + complete_hostname_ + "/"
-             + config_.bucket + "/" + objkey;
-    }
+    return config_.protocol + "://" + complete_hostname_
+           + MkPath(config_.bucket, objkey, config_.dns_buckets);
   }
   std::string MkCompleteHostname() {
     if (config_.dns_buckets) {

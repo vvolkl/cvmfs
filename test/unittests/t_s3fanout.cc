@@ -53,6 +53,42 @@ TEST(T_S3Fanout, DetectThrottleIndicator) {
 }
 
 
+TEST(T_S3Fanout, MkPath) {
+  EXPECT_EQ("/data/ab/file1", s3fanout::MkPath("bkt", "data/ab/file1", true));
+  EXPECT_EQ("/bkt/data/ab/file1",
+            s3fanout::MkPath("bkt", "data/ab/file1", false));
+
+  // Empty object key: multi-object delete and bucket creation post to the
+  // bucket root.  With DNS buckets that leaves a bare "/", in path style the
+  // bucket itself is the path and there is no trailing slash.
+  EXPECT_EQ("/", s3fanout::MkPath("bkt", "", true));
+  EXPECT_EQ("/bkt", s3fanout::MkPath("bkt", "", false));
+}
+
+
+// The V2 canonical resource must stay in sync with the path that is actually
+// requested, otherwise the server computes a different signature.  Signing
+// "/bkt?delete" for a request to "/" is what made Ceph RGW reject batch
+// deletes with SignatureDoesNotMatch.
+TEST(T_S3Fanout, MkV2CanonicalResourceMatchesPath) {
+  const char * const keys[] = {"", "data/ab/file1"};
+  const bool dns_buckets[] = {true, false};
+  for (unsigned i = 0; i < 2; ++i) {
+    for (unsigned j = 0; j < 2; ++j) {
+      const string path = s3fanout::MkPath("bkt", keys[i], dns_buckets[j]);
+      // With DNS buckets the bucket is in the hostname, so the signature has
+      // to prepend it; in path style it is already part of the path.
+      const string expected = (dns_buckets[j] ? "/bkt" + path : path);
+      EXPECT_EQ(expected, s3fanout::MkV2CanonicalResource(
+                              "bkt", keys[i], dns_buckets[j], false));
+      EXPECT_EQ(expected + "?delete",
+                s3fanout::MkV2CanonicalResource("bkt", keys[i], dns_buckets[j],
+                                                true));
+    }
+  }
+}
+
+
 TEST(T_S3Fanout, MkV2CanonicalResource) {
   // The resource must mirror MkUrl().  With DNS buckets the request path is
   // "/" + object_key, so an empty key keeps the trailing slash; in path style
