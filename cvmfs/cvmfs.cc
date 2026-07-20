@@ -1225,15 +1225,22 @@ static void cvmfs_open(fuse_req_t req, fuse_ino_t ino,
 
   if (dirent.IsBundleTrigger() and prefetch_file_bundles_) {
     // fetch dependences if not there already
+    // NOTE: the lookup must not live inside assert(), or it is compiled away
+    // in NDEBUG builds and the bundle path is derived from an empty string.
     PathString trigger_path;
-    assert(GetPathForInode(ino, &trigger_path)
-           && "Unable to retrieve the path of the trigger file");
-    BundleMgr bundle_mgr(mount_point_, trigger_path);
-    if (bundle_mgr) {
-      bundle_mgr.Fetch();
-    } else {
+    const bool retrieved_trigger_path = GetPathForInode(ino, &trigger_path);
+    if (!retrieved_trigger_path) {
       LogCvmfs(kLogCvmfs, kLogDebug,
-               "Couldn't fetch bundle associated to file %s", path.c_str());
+               "Unable to retrieve the path of the trigger file %s",
+               path.c_str());
+    } else {
+      BundleMgr bundle_mgr(mount_point_, trigger_path);
+      if (bundle_mgr) {
+        bundle_mgr.Fetch();
+      } else {
+        LogCvmfs(kLogCvmfs, kLogDebug,
+                 "Couldn't fetch bundle associated to file %s", path.c_str());
+      }
     }
   }
 

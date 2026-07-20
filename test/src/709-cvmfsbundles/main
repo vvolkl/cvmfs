@@ -12,7 +12,7 @@ produce_dependency_files() {
   printf "This is dependency 2\n" > dep2.txt
   printf "This is a trigger\n" > trigger.txt
 
-  cat > .cvmfsbundle.trigger.txt <<-EOF
+  cat > .cvmfsbundle-trigger.txt <<-EOF
 {
   "name": "CVMFS_BUNDLE",
   "version": "1.0.0",
@@ -53,17 +53,24 @@ cvmfs_run_test() {
   echo "compare the results of cvmfs to our reference copy"
   compare_directories $repo_dir $reference_dir || return $?
 
-  echo "putting some stuff in the new repository"
-  produce_dependency_files $repo_dir || return 3
-
   echo "check catalog and data integrity"
   check_repository $CVMFS_TEST_REPO -i || return $?
 
   echo "mount the repository on a local mountpoint"
   do_local_mount $mnt_point $CVMFS_TEST_REPO $(get_repo_url $CVMFS_TEST_REPO) || { desaster_cleanup $mnt_point $CVMFS_TEST_REPO; return 10; }
 
-  echo "check if the Stratum1 repository contains exactly the same as the reference copy"
-  compare_directories $mnt_point $reference_dir || { desaster_cleanup $mnt_point $CVMFS_TEST_REPO; return 11; }
+  # The core test must run on a freshly mounted (empty) cache and must not read
+  # any dependency beforehand -- otherwise the "dependency is cached" assertion
+  # below is satisfied by that ordinary read rather than by bundle prefetching.
+  # Reading the magic xattrs is metadata-only and does not populate the cache.
+
+  echo "check that the bundle trigger flag was set at publish time"
+  trigger_flag=$(attr -qg bundle_trigger "$mnt_point/trigger.txt" | xargs)
+  if [ "x$trigger_flag" != "x1" ]; then
+      echo "trigger.txt is not marked as a bundle trigger (got '$trigger_flag')"
+      desaster_cleanup $mnt_point $CVMFS_TEST_REPO
+      return 50
+  fi
 
   dep1_hash=$(attr -g hash "$mnt_point/dep1.txt" | cut -d: -f2 | xargs)
   trigger_hash=$(attr -g hash "$mnt_point/trigger.txt" | cut -d: -f2 | xargs)
@@ -74,12 +81,20 @@ cvmfs_run_test() {
   trigger_in_cas=$(echo $trigger_hash | cut -c 3- )
   dep1_in_cas=$(echo $dep1_hash | cut -c 3- )
 
-  # core testing here
-  echo "Opening trigger file"
-  cat $mnt_point/trigger.txt
-
   echo "Cache location"
   echo $cache
+
+  echo "check that the dependency is NOT cached before the trigger is opened"
+  if [ -f "$dep1_location/$dep1_in_cas" ]; then
+      echo "Dep1 already in the cache before opening the trigger;"
+      echo "the prefetch assertion below would be meaningless"
+      desaster_cleanup $mnt_point $CVMFS_TEST_REPO
+      return 54
+  fi
+
+  # core testing here: opening the trigger must pull in its dependencies
+  echo "Opening trigger file"
+  cat $mnt_point/trigger.txt
 
   echo "Trigger expected location"
   echo $trigger_location/$trigger_in_cas
@@ -88,6 +103,7 @@ cvmfs_run_test() {
       echo "Trigger FOUND inside the cache in the expected location"
   else
       echo "Trigger NOT FOUND inside the cache in the expected location"
+      desaster_cleanup $mnt_point $CVMFS_TEST_REPO
       return 55
   fi
 
@@ -95,8 +111,13 @@ cvmfs_run_test() {
       echo "Dep1 FOUND inside the cache in the expected location"
   else
       echo "Dep1 NOT FOUND inside the cache in the expected location"
+      echo "(bundle prefetching did not happen)"
+      desaster_cleanup $mnt_point $CVMFS_TEST_REPO
       return 56
   fi
+
+  echo "check if the repository contains exactly the same as the reference copy"
+  compare_directories $mnt_point $reference_dir || { desaster_cleanup $mnt_point $CVMFS_TEST_REPO; return 11; }
 
   echo "unmount the Stratum1 repository"
   sudo umount $mnt_point || { desaster_cleanup $mnt_point; return 12; }

@@ -19,8 +19,10 @@
 /*
 
 The .cvmfsbundle file serves both as a file list and as a trigger for loading a
-bundle. The convention is to call it .cvmfsbundle.<filename>, where <filename>
-should trigger the bundle.
+bundle. The convention is to call it .cvmfsbundle-<filename>, where <filename>
+should trigger the bundle. The ".cvmfsbundle-" prefix is reserved: it is what
+SyncItem::IsBundleSpec() matches on ingestion and what BundleMgr reconstructs
+when a trigger file is opened, so the two must stay in sync.
 
 ? The content could be structured in json.
 
