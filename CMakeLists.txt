@@ -503,6 +503,12 @@ if (BUILD_CVMFS)
     set(BUILD_LIBFUSE2 ON)
     find_package (OSXFuse REQUIRED)
     set (INCLUDE_DIRECTORIES ${INCLUDE_DIRECTORIES} ${MACOS_FUSE_INCLUDE_DIR})
+    # On macOS, CMake may treat /usr/local/include as an implicit system include
+    # directory and omit it from compile commands. With an SDK sysroot in use,
+    # AppleClang then no longer finds macFUSE headers such as
+    # <fuse/fuse_lowlevel.h>. Force the include path explicitly.
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -I${MACOS_FUSE_INCLUDE_DIR}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${MACOS_FUSE_INCLUDE_DIR}")
     set (FUSE_LIBRARIES ${MACOS_FUSE_LIBRARIES}) # just abstract the difference here... they are compatible
     if (USE_MACFUSE_KEXT)
       add_definitions(-DUSE_MACFUSE_KEXT)

@@ -654,8 +654,16 @@ lookup_reply_negative:
   mount_point_->dentry_tracker()->Add(parent_fuse, name, uint64_t(timeout));
   fuse_remounter_->fence()->Leave();
   perf::Inc(file_system_->n_fs_lookup_negative());
+#ifdef USE_MACFUSE_FSKIT
+  // FSKit does not interpret ino=0 in fuse_reply_entry as a negative lookup
+  // (unlike traditional FUSE).  It silently maps it to the mount root inode,
+  // making non-existent paths appear as directories.  Reply with an explicit
+  // ENOENT error instead.
+  fuse_reply_err(req, ENOENT);
+#else
   result.ino = 0;
   fuse_reply_entry(req, &result);
+#endif
   return;
 
 lookup_reply_error:
@@ -1019,6 +1027,19 @@ static void cvmfs_opendir(fuse_req_t req, fuse_ino_t ino,
 
     struct stat fixed_info = listing_from_catalog.AtPtr(i)->info;
     fixed_info.st_ino = entry_dirent.inode();
+
+#ifdef USE_MACFUSE_FSKIT
+    // Register inode in tracker so that subsequent GETATTR calls can
+    // resolve inode -> path.  This is normally done in cvmfs_lookup(),
+    // but the macFUSE FSKit backend skips LOOKUP after READDIR and
+    // goes straight to GETATTR using the inodes from the listing.
+    if (!file_system_->IsNfsSource()) {
+      mount_point_->inode_tracker()->VfsGet(
+          glue::InodeEx(entry_dirent.inode(), entry_dirent.mode()),
+          entry_path);
+    }
+#endif
+
     AddToDirListing(req, listing_from_catalog.AtPtr(i)->name.c_str(),
                     &fixed_info, &fuse_listing);
   }
@@ -1486,8 +1507,14 @@ static void cvmfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
   }
 #endif
 
-  // Get data chunk (<=128k guaranteed by Fuse)
+  // Get data chunk (<=128k guaranteed by Fuse, but FSKit worker threads have
+  // small stacks so alloca can overflow; use heap allocation instead)
+#ifdef USE_MACFUSE_FSKIT
+  std::vector<char> data_buf(size);
+  char *data = data_buf.data();
+#else
   char *data = static_cast<char *>(alloca(size));
+#endif
   unsigned int overall_bytes_fetched = 0;
 
   const int64_t fd = static_cast<int64_t>(fi->fh);
@@ -1642,6 +1669,20 @@ static void cvmfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
 /**
  * File close operation, redirected into cache.
  */
+#ifdef USE_MACFUSE_FSKIT
+/**
+ * FSKit sends FSYNC on files opened for reading (e.g. during dyld loading).
+ * CVMFS is read-only so fsync is a no-op, but returning ENOSYS causes FSKit
+ * to report I/O errors.  Return success instead.
+ */
+static void cvmfs_fsync(fuse_req_t req, fuse_ino_t ino, int datasync,
+                        struct fuse_file_info *fi) {
+  LogCvmfs(kLogCvmfs, kLogDebug,
+           "cvmfs_fsync (no-op) on inode: %" PRIu64, uint64_t(ino));
+  fuse_reply_err(req, 0);
+}
+#endif
+
 static void cvmfs_release(fuse_req_t req, fuse_ino_t ino,
                           struct fuse_file_info *fi) {
   const HighPrecisionTimer guard_timer(file_system_->hist_fs_release());
@@ -2267,6 +2308,9 @@ static void SetCvmfsOperations(struct fuse_lowlevel_ops *cvmfs_operations) {
   cvmfs_operations->open = cvmfs_open;
   cvmfs_operations->read = cvmfs_read;
   cvmfs_operations->release = cvmfs_release;
+#ifdef USE_MACFUSE_FSKIT
+  cvmfs_operations->fsync = cvmfs_fsync;
+#endif
   cvmfs_operations->opendir = cvmfs_opendir;
   cvmfs_operations->readdir = cvmfs_readdir;
   cvmfs_operations->releasedir = cvmfs_releasedir;
