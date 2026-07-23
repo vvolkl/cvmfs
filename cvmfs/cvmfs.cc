@@ -1171,135 +1171,6 @@ static void FillOpenFlags(const glue::PageCacheTracker::OpenDirectives od,
 // around the actual getxattr call. In order to not run into an I/O error
 // we use a special file handle for symlinks, from which one cannot read.
 static const uint64_t kFileHandleIgnore = static_cast<uint64_t>(2) << 60;
-
-// Work around an FSKit/macFUSE issue affecting exec() of binaries from cvmfs:
-// reading the tail of the file first avoids EIO during macOS code signature
-// validation of Mach-O files with an embedded signature blob near EOF.
-// We apply the workaround to executable regular files in general.
-static const uint64_t kExecTailPrefetchBytes = 64 * 1024;
-
-static bool IsMacosExecCandidate(const catalog::DirectoryEntry &dirent) {
-  return S_ISREG(dirent.mode()) && ((dirent.mode() & 0111) != 0);
-}
-
-static bool PrefetchTailForMacosExec(cvmfs::Fetcher *fetcher,
-                                     const catalog::DirectoryEntry &dirent,
-                                     const PathString &path,
-                                     const int fd) {
-  if (!IsMacosExecCandidate(dirent))
-    return true;
-
-  CacheManager *cache_mgr = fetcher->cache_mgr();
-  const int64_t size = cache_mgr->GetSize(fd);
-  if (size < 0) {
-    LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
-             "failed to determine size for macOS exec tail prefetch of %s "
-             "(fd %d): %d", path.c_str(), fd, static_cast<int>(size));
-    return false;
-  }
-
-  const uint64_t u_size = static_cast<uint64_t>(size);
-  const uint64_t prefetch = std::min(kExecTailPrefetchBytes, u_size);
-  if (prefetch == 0)
-    return true;
-
-  const uint64_t offset = u_size - prefetch;
-  std::vector<char> buf(prefetch);
-  const int64_t nbytes = cache_mgr->Pread(fd, &buf[0], prefetch, offset);
-  if ((nbytes < 0) || (static_cast<uint64_t>(nbytes) != prefetch)) {
-    LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
-             "macOS exec tail prefetch failed for %s (fd %d, size %" PRIu64
-             ", offset %" PRIu64 ", requested %" PRIu64 ", got %" PRId64 ")",
-             path.c_str(), fd, u_size, offset, prefetch, nbytes);
-    return false;
-  }
-
-  LogCvmfs(kLogCvmfs, kLogDebug,
-           "macOS exec tail prefetch succeeded for %s (%" PRIu64 " bytes at "
-           "offset %" PRIu64 ")",
-           path.c_str(), prefetch, offset);
-  return true;
-}
-
-static bool PrefetchChunkedTailForMacosExec(const catalog::DirectoryEntry &dirent,
-                                            const PathString &path,
-                                            const FileChunkReflist &chunks) {
-  if (!IsMacosExecCandidate(dirent) || (chunks.list == NULL)
-      || chunks.list->IsEmpty()) {
-    return true;
-  }
-
-  const uint64_t file_size = dirent.size();
-  const uint64_t prefetch = std::min(kExecTailPrefetchBytes, file_size);
-  if (prefetch == 0)
-    return true;
-
-  const uint64_t start_offset = file_size - prefetch;
-  FileChunkReflist mutable_chunks = chunks;
-  const unsigned start_idx = mutable_chunks.FindChunkIdx(start_offset);
-  Fetcher *this_fetcher = chunks.external_data ? mount_point_->external_fetcher()
-                                               : mount_point_->fetcher();
-  CacheManager *cache_mgr = this_fetcher->cache_mgr();
-
-  for (unsigned chunk_idx = start_idx; chunk_idx < chunks.list->size(); ++chunk_idx) {
-    const FileChunk *chunk = chunks.list->AtPtr(chunk_idx);
-    const uint64_t chunk_start = chunk->offset();
-    const uint64_t chunk_end = chunk_start + chunk->size();
-    const uint64_t read_start = std::max(start_offset, chunk_start);
-    const uint64_t read_end = std::min(file_size, chunk_end);
-    if (read_end <= read_start)
-      continue;
-
-    CacheManager::Label label;
-    label.path = chunks.path.ToString();
-    label.size = chunk->size();
-    label.zip_algorithm = chunks.compression_alg;
-    label.flags |= CacheManager::kLabelChunked;
-    if (mount_point_->catalog_mgr()->volatile_flag())
-      label.flags |= CacheManager::kLabelVolatile;
-    if (chunks.external_data) {
-      label.flags |= CacheManager::kLabelExternal;
-      label.range_offset = chunk->offset();
-    }
-
-    const int fd = this_fetcher->Fetch(
-        CacheManager::LabeledObject(chunk->content_hash(), label));
-    if (fd < 0) {
-      LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
-               "macOS exec tail prefetch failed to fetch chunk %u for %s: %d",
-               chunk_idx, path.c_str(), fd);
-      return false;
-    }
-
-    const uint64_t offset_in_chunk = read_start - chunk_start;
-    const uint64_t bytes_to_read = read_end - read_start;
-    std::vector<char> buf(bytes_to_read);
-    const int64_t nbytes = cache_mgr->Pread(fd, &buf[0], bytes_to_read,
-                                            offset_in_chunk);
-    const int close_retval = cache_mgr->Close(fd);
-    if ((nbytes < 0) || (static_cast<uint64_t>(nbytes) != bytes_to_read)) {
-      LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
-               "macOS exec tail prefetch failed for chunk %u of %s "
-               "(offset %" PRIu64 ", requested %" PRIu64 ", got %" PRId64
-               ", close %d)",
-               chunk_idx, path.c_str(), offset_in_chunk, bytes_to_read, nbytes,
-               close_retval);
-      return false;
-    }
-    if (close_retval != 0) {
-      LogCvmfs(kLogCvmfs, kLogDebug | kLogSyslogWarn,
-               "macOS exec tail prefetch close failed for chunk %u of %s: %d",
-               chunk_idx, path.c_str(), close_retval);
-      return false;
-    }
-  }
-
-  LogCvmfs(kLogCvmfs, kLogDebug,
-           "macOS exec tail prefetch succeeded for chunked file %s (%" PRIu64
-           " bytes from offset %" PRIu64 ")",
-           path.c_str(), prefetch, start_offset);
-  return true;
-}
 #endif
 
 /**
@@ -1495,10 +1366,6 @@ static void cvmfs_open(fuse_req_t req, fuse_ino_t ino,
     }
     FillOpenFlags(open_directives, fi);
 
-#ifdef __APPLE__
-    PrefetchChunkedTailForMacosExec(dirent, path, chunk_reflist);
-#endif
-
     fuse_remounter_->fence()->Leave();
 
     fi->fh = chunk_tables->next_handle;
@@ -1525,9 +1392,6 @@ static void cvmfs_open(fuse_req_t req, fuse_ino_t ino,
       CacheManager::LabeledObject(dirent.checksum(), label));
 
   if (fd >= 0) {
-#ifdef __APPLE__
-    PrefetchTailForMacosExec(this_fetcher, dirent, path, fd);
-#endif
     if (IncAndCheckNoOpenFiles()) {
       LogCvmfs(kLogCvmfs, kLogDebug, "file %s opened (fd %d)", path.c_str(),
                fd);
@@ -1677,21 +1541,6 @@ static void cvmfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     assert(retval);
     chunk_tables->Unlock();
 
-#ifdef __APPLE__
-    if (off == 0) {
-      catalog::DirectoryEntry dirent;
-      PathString path;
-      const bool found_dirent = GetDirentForInode(ino, &dirent);
-      const bool found_path = GetPathForInode(ino, &path);
-      if (found_dirent && found_path) {
-        LogCvmfs(kLogCvmfs, kLogDebug,
-                 "running macOS exec tail prefetch during first read for "
-                 "chunked file %s", path.c_str());
-        PrefetchChunkedTailForMacosExec(dirent, path, chunks);
-      }
-    }
-#endif
-
     unsigned chunk_idx = chunks.FindChunkIdx(off);
 
     // Lock chunk handle
@@ -1787,20 +1636,6 @@ static void cvmfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
     LogCvmfs(kLogCvmfs, kLogDebug, "released chunk file descriptor %d",
              chunk_fd.fd);
   } else {
-#ifdef __APPLE__
-    if (off == 0) {
-      catalog::DirectoryEntry dirent;
-      PathString path;
-      const bool found_dirent = GetDirentForInode(ino, &dirent);
-      const bool found_path = GetPathForInode(ino, &path);
-      if (found_dirent && found_path) {
-        LogCvmfs(kLogCvmfs, kLogDebug,
-                 "running macOS exec tail prefetch during first read for %s",
-                 path.c_str());
-        PrefetchTailForMacosExec(mount_point_->fetcher(), dirent, path, abs_fd);
-      }
-    }
-#endif
     const int64_t nbytes = file_system_->cache_mgr()->Pread(abs_fd, data, size,
                                                             off);
     if (nbytes < 0) {
