@@ -293,6 +293,10 @@ if (BUILD_CVMFS)
                          cvmfs_util_debug
                          ${FUSE3_LIBRARIES} ${CVMFS_FUSE_LINK_LIBRARIES}
   )
+  if (MACOSX AND USE_MACFUSE_FSKIT)
+    target_compile_definitions(cvmfs_fuse3 PRIVATE USE_MACFUSE_FSKIT=1)
+    target_compile_definitions(cvmfs_fuse3_debug PRIVATE USE_MACFUSE_FSKIT=1)
+  endif()
 
 
   #

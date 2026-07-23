@@ -532,8 +532,16 @@ if (BUILD_CVMFS)
   find_package (FUSE3 REQUIRED)
   set (INCLUDE_DIRECTORIES ${INCLUDE_DIRECTORIES} ${FUSE3_INCLUDE_DIR})
   add_definitions(-DHAS_FUSE3)
-  if (MACOSX AND USE_MACFUSE_KEXT)
-    add_definitions(-DUSE_MACFUSE_KEXT)
+  if (MACOSX)
+    # On macOS, CMake may treat /usr/local/include as an implicit system include
+    # directory and omit it from compile commands. With an SDK sysroot in use,
+    # AppleClang then no longer finds macFUSE headers such as
+    # <fuse3/fuse_lowlevel.h>. Force the include path explicitly.
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -I${FUSE3_INCLUDE_DIR}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${FUSE3_INCLUDE_DIR}")
+    if (USE_MACFUSE_KEXT)
+      add_definitions(-DUSE_MACFUSE_KEXT)
+    endif()
   endif()
 endif ()
 
