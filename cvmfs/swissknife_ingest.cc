@@ -169,9 +169,14 @@ int swissknife::Ingest::Main(const swissknife::ArgumentList &args) {
     s3_config_path = *args.find('3')->second;
   }
 
-  const bool use_s3_direct =
-      !s3_config_path.empty()
-      && spooler_definition.driver_type == upload::SpoolerDefinition::Gateway;
+  const bool use_s3_direct = !s3_config_path.empty();
+  if (use_s3_direct
+      && spooler_definition.driver_type != upload::SpoolerDefinition::Gateway) {
+    // Do not silently fall back to the plain uploader: the caller asked for
+    // direct-to-S3 and would otherwise not notice that it did not happen.
+    PrintError("Direct-to-S3 upload (-3) requires a gateway spooler");
+    return 3;
+  }
 
   if (use_s3_direct) {
     // Direct-to-S3 mode: data chunks go to S3, catalogs through gateway
@@ -194,22 +199,12 @@ int swissknife::Ingest::Main(const swissknife::ArgumentList &args) {
   if (NULL == params.spooler)
     return 3;
 
-  upload::Spooler *spooler_catalogs_ptr = NULL;
-  if (use_s3_direct) {
-    upload::GatewayS3Uploader *gw_s3_cat = new upload::GatewayS3Uploader(
-        spooler_definition_catalogs, s3_config_path, params.repo_name);
-    if (!gw_s3_cat->Initialize()) {
-      PrintError("Failed to initialize GatewayS3 catalog uploader");
-      delete gw_s3_cat;
-      return 3;
-    }
-    spooler_catalogs_ptr = upload::Spooler::Construct(
-        spooler_definition_catalogs, gw_s3_cat, &publish_statistics);
-  } else {
-    spooler_catalogs_ptr = upload::Spooler::Construct(
-        spooler_definition_catalogs, &publish_statistics);
-  }
-  const UniquePtr<upload::Spooler> spooler_catalogs(spooler_catalogs_ptr);
+  // The catalog spooler stays a plain gateway spooler in both modes: everything
+  // it uploads is metadata that has to go through the gateway anyway, so an
+  // S3-aware uploader here would only add a second fanout manager and collector
+  // thread that never route anything to S3.
+  const UniquePtr<upload::Spooler> spooler_catalogs(upload::Spooler::Construct(
+      spooler_definition_catalogs, &publish_statistics));
   if (!spooler_catalogs.IsValid())
     return 3;
 
