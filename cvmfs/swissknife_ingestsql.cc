@@ -29,11 +29,19 @@
 #include "upload.h"
 #include "util/logging.h"
 
+// NB: abort(), NOT assert(0). assert() compiles out under NDEBUG (release
+// builds), so with assert(0) every one of these guards would LOG its message
+// and then CONTINUE into the very state it just rejected — e.g. an empty
+// chunk-offset vector then underflows `offsets.size() - 1` and the process
+// dies with an unexplained SIGSEGV instead of the guard's message (seen in
+// production on a 170-member coarse-publish finalize). abort() makes the
+// guard fatal in every build type; the message reaches the caller through
+// the captured stderr.
 #define CHECK_SQLITE_ERROR(ret, expected)                         \
   do {                                                            \
     if ((ret) != expected) {                                      \
       LogCvmfs(kLogCvmfs, kLogStderr, "SQLite error: %d", (ret)); \
-      assert(0);                                                  \
+      abort();                                                    \
     }                                                             \
   } while (0)
 
@@ -41,7 +49,7 @@
   do {                                                     \
     if (!(check)) {                                        \
       LogCvmfs(kLogCvmfs, kLogStderr, msg, ##__VA_ARGS__); \
-      assert(0);                                           \
+      abort();                                             \
     }                                                      \
   } while (0)
 
@@ -436,9 +444,7 @@ static XattrList marshal_xattrs(const char *acl_string) {
   if (ret) {
     LogCvmfs(kLogCvmfs, kLogStderr,
              "failure of acl_from_text_to_xattr_value(%s)", acl_string);
-    assert(
-        0);  // TODO(vavolkl): incorporate error handling other than asserting
-    return aclobj;
+    abort();  // fatal in release builds too (assert(0) is a no-op with NDEBUG)
   }
   if (!equiv_mode) {
     CUSTOM_ASSERT(
@@ -1077,7 +1083,10 @@ int swissknife::IngestSQL::do_additions(
       bool exists = false;
       exists = catalog_manager.LookupDirEntry(
           MakeCatalogPath(curr_dir), catalog::kLookupDefault, &dir_entry);
-      assert(exists);  // the dir must exist at this point
+      // Fatal in release builds too: with a plain assert (no-op under NDEBUG)
+      // a failed lookup would continue into an uninitialised dir_entry.
+      CUSTOM_ASSERT(exists, "directory [%s] not found in catalog during "
+                    "nested-catalog snapshot", curr_dir.c_str());
       if (dir_entry.IsNestedCatalogMountpoint()
           || dir_entry.IsNestedCatalogRoot()) {
         catalog_manager.AddCatalogToQueue(curr_dir);
@@ -1315,6 +1324,12 @@ void swissknife::IngestSQL::load_files(
     size_t const size = sqlite3_column_int64(stmt, 5);
     char *hashes_cstr = (char *)sqlite3_column_text(stmt, 6);
     int const internal = sqlite3_column_int(stmt, 7);
+    // A SQL NULL column comes back as a NULL pointer: constructing a
+    // std::string from it (name) or handing it to strtok_r (hashes) is
+    // undefined behaviour — fail with a message naming the row instead.
+    CUSTOM_ASSERT(name != NULL, "files row with NULL name (corrupt descriptor)");
+    CUSTOM_ASSERT(hashes_cstr != NULL, "files row [%s] has NULL hashes "
+                  "(corrupt descriptor)", name);
     int const compressed = schema_revision <= 2 ? 0
                                                 : sqlite3_column_int(stmt, 8);
 
@@ -1329,6 +1344,12 @@ void swissknife::IngestSQL::load_files(
     }
     all_files[parent_dir].emplace_back(std::move(names), mtime, size, owner,
                                        grp, mode, internal, compressed);
+    // `names` was moved into the File above, so it is now a valid but
+    // unspecified (in practice empty) string.  Every diagnostic below must
+    // reference the STORED copy: printing the moved-from local is how the
+    // production chunk-grid abort came out as "file []" and could not name
+    // the file that caused it.
+    const string &fname = all_files[parent_dir].back().name;
 
     // tokenize hashes
     char *ref;
@@ -1340,7 +1361,7 @@ void swissknife::IngestSQL::load_files(
     off_t offset = 0;
 
     CUSTOM_ASSERT(size >= 0, "file size cannot be negative [%s]",
-                  names.c_str());
+                  fname.c_str());
     size_t const kChunkSize = internal ? kInternalChunkSize
                                        : kExternalChunkSize;
 
@@ -1348,7 +1369,7 @@ void swissknife::IngestSQL::load_files(
       offsets.push_back(offset);
       // TODO: check the hash format
       CUSTOM_ASSERT(check_hash(tok) == 0,
-                    "provided hash for [%s] is invalid: %s", names.c_str(),
+                    "provided hash for [%s] is invalid: %s", fname.c_str(),
                     tok);
       hashes.push_back(
           shash::MkFromHexPtr(shash::HexPtr(tok), shash::kSuffixNone));
@@ -1362,8 +1383,10 @@ void swissknife::IngestSQL::load_files(
     }
     CUSTOM_ASSERT(
         offsets.size() == expected_num_chunks,
-        "offsets size %ld does not match expected number of chunks %ld",
-        offsets.size(), expected_num_chunks);
+        "file [%s]: offsets size %ld does not match expected number of "
+        "chunks %ld", fname.c_str(), offsets.size(), expected_num_chunks);
+    // offsets is non-empty here (expected_num_chunks >= 1 and the assert above
+    // is fatal), so the size_t arithmetic below cannot underflow.
     for (size_t i = 0; i < offsets.size() - 1; i++) {
       sizes.push_back(size_t(offsets[i + 1] - offsets[i]));
     }
