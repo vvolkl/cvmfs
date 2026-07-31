@@ -327,6 +327,72 @@ if(BUILTIN_EXTERNALS)
 endif()
 
 #
+# Refuse to build with NDEBUG defined.
+#
+# CVMFS uses assert() as a production invariant mechanism, and several call
+# sites put SIDE EFFECTS inside the assert.  Compiling with -DNDEBUG therefore
+# does not merely disable checks -- it DELETES behaviour the code depends on:
+#
+#   cvmfs/sync_union_tarball.cc
+#     assert(ARCHIVE_OK == archive_read_support_format_tar(src));
+#   -> no libarchive format is ever registered, and `cvmfs_server ingest`
+#      fails with "Impossible to open the archive: No formats registered".
+#
+#   cvmfs/swissknife_ingestsql.cc
+#     CHECK_SQLITE_ERROR / CUSTOM_ASSERT end in assert(0)
+#   -> every guard logs its message and then continues into the state it
+#      just rejected; observed in production as an unexplained SIGSEGV in a
+#      170-member coarse-publish finalize.
+#
+#   cvmfs/cvmfs.cc
+#     assert(ClearPermittedCapabilities(reservecaps, nocaps));
+#   -> the privilege drop silently does not happen.
+#
+# Before ea57a1e75 (#4341) this could not happen: the cache reset above
+# cleared CMAKE_BUILD_TYPE unconditionally, so the -DNDEBUG that CMake adds
+# to Release / RelWithDebInfo / MinSizeRel never reached the sources.  That
+# commit correctly honours the user's build type, which is what makes this
+# check necessary rather than redundant.
+#
+# For an optimised build, strip NDEBUG from the per-config flags:
+#   cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+#         -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O2 -g" \
+#         -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g" ..
+#
+# The escape hatch exists so this cannot become the thing that blocks a build
+# at an awkward moment.  It is not a supported configuration.
+#
+option(CVMFS_ALLOW_NDEBUG "Permit a build that defines NDEBUG (UNSUPPORTED)" OFF)
+if(NOT CVMFS_ALLOW_NDEBUG)
+  set(_cvmfs_flag_vars CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+  if(CMAKE_BUILD_TYPE)
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _cvmfs_bt)
+    list(APPEND _cvmfs_flag_vars
+         "CMAKE_C_FLAGS_${_cvmfs_bt}" "CMAKE_CXX_FLAGS_${_cvmfs_bt}")
+  endif()
+  set(_cvmfs_ndebug_hits "")
+  foreach(_cvmfs_v IN LISTS _cvmfs_flag_vars)
+    if("${${_cvmfs_v}}" MATCHES "(^| )-D *NDEBUG($| )")
+      set(_cvmfs_ndebug_hits
+          "${_cvmfs_ndebug_hits}\n    ${_cvmfs_v} = ${${_cvmfs_v}}")
+    endif()
+  endforeach()
+  if(_cvmfs_ndebug_hits)
+    message(FATAL_ERROR
+      "NDEBUG is defined in the compile flags:${_cvmfs_ndebug_hits}\n\n"
+      "  CVMFS puts side effects inside assert(), so an NDEBUG build silently "
+      "removes behaviour (libarchive format registration, ingestsql guards, "
+      "the client capability drop) rather than merely removing checks.\n\n"
+      "  CMAKE_BUILD_TYPE is currently '${CMAKE_BUILD_TYPE}'.  For an "
+      "optimised build, override the per-config flags to drop NDEBUG:\n"
+      "    -DCMAKE_BUILD_TYPE=RelWithDebInfo "
+      "-DCMAKE_C_FLAGS_RELWITHDEBINFO=\"-O2 -g\" "
+      "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=\"-O2 -g\"\n\n"
+      "  Use -DCVMFS_ALLOW_NDEBUG=ON only if you know why you want this.")
+  endif()
+endif()
+
+#
 # include some common functionality
 #
 include (FindPythonModule)
