@@ -106,10 +106,9 @@ and the v2 record before considering the legacy trailer.
 ### v2 manifest record
 
 The v2 record is a canonical binary or text envelope carried on the extension
-line.  It has a version, an explicit algorithm identifier, and an
-RSASSA-PKCS1-v1_5/SHA-256 signature.  Its signed input is domain-separated and
-binds the exact original manifest payload, excluding the extension line.  For
-example:
+line.  It has a version, an explicit algorithm identifier, and one or more
+signature records.  Their signed input is domain-separated and binds the exact
+original manifest payload, excluding the extension line.  For example:
 
 ```text
 "cvmfs manifest signature v2\\0" || algorithm || length(payload) || payload
@@ -117,7 +116,7 @@ example:
 
 The payload already contains the repository name, revision, catalog root, and
 publisher-certificate hash; signing its exact bytes binds all of them.  The
-initial implementation supports only `rsa-pkcs1v15-sha256`; a v2 parser must
+initial implementation should support `rsa-pss-sha256`; a v2 parser must
 reject unknown algorithms rather than downgrade.
 
 A v2 client obtains the publisher certificate named in the original payload,
@@ -128,7 +127,8 @@ trust the payload without invoking the legacy manifest SHA-1 verifier.
 
 Use the same extension construction for `.cvmfswhitelist`.  The v2 record
 binds the exact original whitelist payload and is signed by an existing
-configured master key with RSASSA-PKCS1-v1_5/SHA-256.  A v2 client verifies the
+configured master key with a permitted v2 SHA-256 signature suite.  A v2
+client verifies the
 record with its locally configured master public keys, then uses the bound
 whitelist payload to authorize the publisher certificate.
 
@@ -160,6 +160,71 @@ required setting protects against replay of an old pre-v2 object.
 Before this setting is enabled, new clients may support v1-only repositories
 for compatibility.  That mode is explicitly legacy-capable and is not suitable
 for a policy-restricted installation.
+
+## Signature agility and key rotation
+
+The v2 extension is the format boundary for future signature changes.  It
+should be extensible, but it must not implement algorithm agility as "accept
+any signature that happens to verify".
+
+### Protected record
+
+Define a canonical, length-delimited v2 record with:
+
+```text
+magic and format version
+object type                 manifest or whitelist
+signature suite identifier  for example rsa-pss-sha256
+signer key identifier       SHA-256 of the signer's SubjectPublicKeyInfo
+payload length and exact payload bytes
+signature bytes
+```
+
+The to-be-signed bytes must include every protected field, including the
+format version, object type, suite identifier, key identifier, payload length,
+and payload.  Prefix them with a fixed domain-separation string such as
+`cvmfs signature v2`.  Thus, a signature for a manifest cannot be replayed as
+a whitelist signature, and an attacker cannot relabel a signature as a weaker
+algorithm.
+
+Use a strictly specified binary encoding, then base64url encode that record on
+the `===` line.  It must have unambiguous lengths, bounded allocation sizes,
+and one canonical serialization.  Do not sign a casually serialized JSON
+object or reconstruct data from parsed key-value fields.
+
+### Multiple signatures
+
+The extension format should allow a canonical list of independently protected
+signature records over the same payload.  The first v2 publisher may emit one
+record, but a later publisher can emit both the current suite and a replacement
+suite during a transition.  This supports key and algorithm rotation without
+another change to the legacy file framing.
+
+A verifier has a configured signature profile: accepted suites, key-size or
+curve requirements, trusted key rules, and a minimum format version.  It
+accepts a record only when that record satisfies its profile.  It must not
+silently fall back to the v1 SHA-1 trailer, an unknown suite, or a weaker v2
+record merely because that record verifies.  Unknown non-critical records may
+be skipped only when another record satisfying the profile is present;
+unknown critical record types fail verification.
+
+For the first v2 suite, prefer `rsa-pss-sha256` with explicit PSS parameters
+when the existing publisher key permits it.  It is modern OpenSSL 3 provider
+functionality and has no old-client interoperability requirement.  If a
+transitional `rsa-pkcs1v15-sha256` suite is needed to reuse constrained keys,
+it must have a distinct identifier and must not be confused with PSS.
+
+### Rotation procedure
+
+1. Add the new public key or certificate fingerprint to the authenticated v2
+   whitelist while retaining the old one.
+2. Publish v2 records signed by both the old and new accepted keys or suites.
+3. Update client signature profiles to require the new suite or key.
+4. After the support window, remove the old v2 record and authorization.
+
+This does not make an unmodified client understand a new algorithm.  It makes
+future migrations additive for clients that understand the v2 container, while
+the configured minimum profile prevents downgrade to an old valid signature.
 
 ## Publication order and consistency
 
