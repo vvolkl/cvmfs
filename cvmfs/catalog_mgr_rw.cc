@@ -1091,6 +1091,11 @@ bool WritableCatalogManager::CreateMissingAncestors(
   if (parent.empty() || parent == "/")
     return true;
 
+  // Fast path: one lookup settles the common case, where the parent is there.
+  DirectoryEntry parent_entry;
+  if (LookupPath(parent, kLookupDefault, &parent_entry))
+    return parent_entry.IsDirectory();
+
   // Walk root-downwards; everything already present is left untouched.
   const std::vector<std::string> parts = SplitString(parent.substr(1), '/');
   std::string prefix;
