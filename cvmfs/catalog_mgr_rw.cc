@@ -1118,7 +1118,9 @@ bool WritableCatalogManager::CreateMissingAncestors(
     DirectoryEntryBase dirent;
     dirent.name_ = NameString(parts[i]);
     dirent.mode_ = S_IFDIR | S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
-    dirent.mtime_ = model.mtime();
+    // model may be a default-constructed entry (the direct-graft caller looks
+    // up a path that does not exist yet), which would date the directory 1970.
+    dirent.mtime_ = model.mtime() ? model.mtime() : time(NULL);
     dirent.uid_ = model.uid();
     dirent.gid_ = model.gid();
     LogCvmfs(kLogCatalog, kLogVerboseMsg,
