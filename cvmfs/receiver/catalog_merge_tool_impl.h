@@ -135,10 +135,25 @@ bool CatalogMergeTool<RwCatalogMgr, RoCatalogMgr>::ReportAddition(
               "CatalogMergeTool - nested catalog %s not found. Aborting",
               rel_path.c_str());
       }
+      // Opt-in: a gateway lease path's parents are not in the changeset.
+      if (mkdir_parents_
+          && !output_catalog_mgr_->CreateMissingAncestors(rel_path.ToString(),
+                                                          entry)) {
+        PANIC(kLogSyslogErr,
+              "CatalogMergeTool - could not create parent directories of %s",
+              rel_path.c_str());
+      }
       output_catalog_mgr_->GraftNestedCatalog(rel_path.ToString(), nested_hash,
                                               nested_size);
       return false;
     } else {
+      if (mkdir_parents_
+          && !output_catalog_mgr_->CreateMissingAncestors(rel_path.ToString(),
+                                                          entry)) {
+        PANIC(kLogSyslogErr,
+              "CatalogMergeTool - could not create parent directories of %s",
+              rel_path.c_str());
+      }
       output_catalog_mgr_->AddDirectory(entry, xattrs, parent_path);
     }
     perf::Inc(counters_->n_directories_added);

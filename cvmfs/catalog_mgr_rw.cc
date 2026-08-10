@@ -1078,6 +1078,53 @@ void WritableCatalogManager::GraftNestedCatalog(const string &mountpoint,
   }
 }
 
+/**
+ * Create the parent directories of mountpoint that do not exist yet.
+ *
+ * Gateway ingest publishes into a lease path whose ancestors are not part of
+ * the changeset, so a graft there would otherwise abort.  Off by default; the
+ * receiver enables it per repository.
+ */
+bool WritableCatalogManager::CreateMissingAncestors(
+    const std::string &mountpoint, const DirectoryEntryBase &model) {
+  const std::string parent = GetParentPath(MakeRelativePath(mountpoint));
+  if (parent.empty() || parent == "/")
+    return true;
+
+  // Walk root-downwards; everything already present is left untouched.
+  const std::vector<std::string> parts = SplitString(parent.substr(1), '/');
+  std::string prefix;
+  for (unsigned i = 0; i < parts.size(); ++i) {
+    if (parts[i].empty())
+      continue;
+    const std::string next = prefix.empty() ? parts[i]
+                                            : prefix + "/" + parts[i];
+    DirectoryEntry existing;
+    if (LookupPath(MakeRelativePath(next), kLookupDefault, &existing)) {
+      if (!existing.IsDirectory()) {
+        LogCvmfs(kLogCatalog, kLogStderr,
+                 "cannot create parent directories of '%s': '%s' exists and is "
+                 "not a directory", mountpoint.c_str(), next.c_str());
+        return false;
+      }
+      prefix = next;
+      continue;
+    }
+    DirectoryEntryBase dirent;
+    dirent.name_ = NameString(parts[i]);
+    dirent.mode_ = S_IFDIR | S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+    dirent.mtime_ = model.mtime();
+    dirent.uid_ = model.uid();
+    dirent.gid_ = model.gid();
+    LogCvmfs(kLogCatalog, kLogVerboseMsg,
+             "creating missing parent directory '%s'", next.c_str());
+    AddDirectory(dirent, XattrList(), prefix);
+    prefix = next;
+  }
+  return true;
+}
+
+
 bool WritableCatalogManager::TryGraftNestedCatalog(const string &mountpoint,
                                                    const shash::Any &new_hash,
                                                    const uint64_t new_size) {

@@ -49,7 +49,8 @@ class CatalogMergeTool : public CatalogDiffTool<RoCatalogMgr> {
       , output_catalog_mgr_(output_catalog_mgr)
       , needs_setup_(false)
       , statistics_(statistics)
-      , counters_(NULL) { }
+      , counters_(NULL)
+      , mkdir_parents_(false) { }
 
   CatalogMergeTool(RoCatalogMgr *old_catalog_mgr, RoCatalogMgr *new_catalog_mgr,
                    const std::string &repo_path, const PathString &lease_path,
@@ -65,7 +66,8 @@ class CatalogMergeTool : public CatalogDiffTool<RoCatalogMgr> {
       , manifest_(manifest)
       , needs_setup_(true)
       , statistics_(statistics)
-      , counters_(NULL) { }
+      , counters_(NULL)
+      , mkdir_parents_(false) { }
 
   CatalogMergeTool(const std::string &repo_path,
                    const shash::Any &old_root_hash,
@@ -87,7 +89,12 @@ class CatalogMergeTool : public CatalogDiffTool<RoCatalogMgr> {
       , manifest_(manifest)
       , needs_setup_(true)
       , statistics_(statistics)
-      , counters_(NULL) { }
+      , counters_(NULL)
+      , mkdir_parents_(false) { }
+
+  // Opt-in (CVMFS_GW_MKDIR_PARENTS): create absent parent directories
+  // of the lease path instead of aborting the commit.
+  void set_mkdir_parents(bool value) { mkdir_parents_ = value; }
 
   virtual ~CatalogMergeTool() { }
 
@@ -129,6 +136,7 @@ class CatalogMergeTool : public CatalogDiffTool<RoCatalogMgr> {
 
   perf::Statistics *statistics_;
   UniquePtr<perf::FsCounters> counters_;
+  bool mkdir_parents_;
 };
 
 }  // namespace receiver

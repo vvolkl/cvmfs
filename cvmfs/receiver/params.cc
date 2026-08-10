@@ -151,6 +151,13 @@ bool GetParamsFromFile(const std::string &repo_name, Params *params) {
     params->enforce_limits = parser.IsOn(enforce_limits_str);
   }
 
+  params->gw_mkdir_parents = false;
+  std::string gw_mkdir_parents_str;
+  if (parser.GetValue("CVMFS_GW_MKDIR_PARENTS",
+                      &gw_mkdir_parents_str)) {
+    params->gw_mkdir_parents = parser.IsOn(gw_mkdir_parents_str);
+  }
+
   // TODO(dwd): the next 3 limit variables should take defaults from
   // SyncParameters
   params->nested_kcatalog_limit = 0;

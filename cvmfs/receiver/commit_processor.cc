@@ -370,6 +370,13 @@ CommitProcessor::Result CommitProcessor::Process(
 
     // Graft: inserts the nested catalog reference into the parent catalog
     // and propagates the directory entry + counters upward.
+    // Opt-in: a gateway lease path's parents are not in the changeset.
+    if (params.gw_mkdir_parents) {
+      catalog::DirectoryEntry model;
+      output_mgr->LookupPath(relative_lease_path, catalog::kLookupDefault,
+                             &model);
+      output_mgr->CreateMissingAncestors(relative_lease_path.ToString(), model);
+    }
     if (!output_mgr->TryGraftNestedCatalog(
             relative_lease_path.ToString(), new_root_hash,
             static_cast<uint64_t>(catalog_size))) {
@@ -409,6 +416,7 @@ CommitProcessor::Result CommitProcessor::Process(
                    relative_lease_path, temp_dir_root,
                    server_tool->download_manager(), manifest_tgt.weak_ref(),
                    statistics_, cache_dir_);
+    merge_tool.set_mkdir_parents(params.gw_mkdir_parents);
     if (!merge_tool.Init()) {
       LogCvmfs(kLogReceiver, kLogSyslogErr,
                "Error: Could not initialize the catalog merge tool");

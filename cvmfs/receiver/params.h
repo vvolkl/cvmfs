@@ -28,6 +28,9 @@ struct Params {
   size_t avg_chunk_size;
   size_t max_chunk_size;
   bool enforce_limits;
+  // CVMFS_GW_MKDIR_PARENTS: create absent parents of a lease path
+  // instead of aborting the commit.  Default off.
+  bool gw_mkdir_parents;
   size_t nested_kcatalog_limit;
   size_t root_kcatalog_limit;
   size_t file_mbyte_limit;

@@ -143,6 +143,12 @@ class WritableCatalogManager : public SimpleCatalogManager {
   // endpoint.  Returns false for expected request validation failures (wrong
   // catalog root, existing target directory, missing parent, etc.) so malformed
   // experimental requests do not abort the receiver worker.
+  // Opt-in (gateway ingest): create absent parent directories of
+  // mountpoint so a graft into a fresh prefix does not abort.
+  // Returns false and changes nothing on any problem.
+  bool CreateMissingAncestors(const std::string &mountpoint,
+                              const DirectoryEntryBase &model);
+
   bool TryGraftNestedCatalog(const string &mountpoint,
                              const shash::Any &new_hash,
                              const uint64_t new_size);
