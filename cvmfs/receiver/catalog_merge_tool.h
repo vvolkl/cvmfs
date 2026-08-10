@@ -137,6 +137,8 @@ class CatalogMergeTool : public CatalogDiffTool<RoCatalogMgr> {
   perf::Statistics *statistics_;
   UniquePtr<perf::FsCounters> counters_;
   bool mkdir_parents_;
+  // Last parent ensured, so one publish walks the chain once.
+  std::string mkdir_parents_done_;
 };
 
 }  // namespace receiver

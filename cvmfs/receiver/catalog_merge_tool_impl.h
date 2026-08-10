@@ -136,23 +136,27 @@ bool CatalogMergeTool<RwCatalogMgr, RoCatalogMgr>::ReportAddition(
               rel_path.c_str());
       }
       // Opt-in: a gateway lease path's parents are not in the changeset.
-      if (mkdir_parents_
-          && !output_catalog_mgr_->CreateMissingAncestors(rel_path.ToString(),
-                                                          entry)) {
-        PANIC(kLogSyslogErr,
-              "CatalogMergeTool - could not create parent directories of %s",
-              rel_path.c_str());
+      if (mkdir_parents_ && mkdir_parents_done_ != parent_path) {
+        if (!output_catalog_mgr_->CreateMissingAncestors(rel_path.ToString(),
+                                                         entry)) {
+          PANIC(kLogSyslogErr,
+                "CatalogMergeTool - could not create parent directories of %s",
+                rel_path.c_str());
+        }
+        mkdir_parents_done_ = parent_path;
       }
       output_catalog_mgr_->GraftNestedCatalog(rel_path.ToString(), nested_hash,
                                               nested_size);
       return false;
     } else {
-      if (mkdir_parents_
-          && !output_catalog_mgr_->CreateMissingAncestors(rel_path.ToString(),
-                                                          entry)) {
-        PANIC(kLogSyslogErr,
-              "CatalogMergeTool - could not create parent directories of %s",
-              rel_path.c_str());
+      if (mkdir_parents_ && mkdir_parents_done_ != parent_path) {
+        if (!output_catalog_mgr_->CreateMissingAncestors(rel_path.ToString(),
+                                                         entry)) {
+          PANIC(kLogSyslogErr,
+                "CatalogMergeTool - could not create parent directories of %s",
+                rel_path.c_str());
+        }
+        mkdir_parents_done_ = parent_path;
       }
       output_catalog_mgr_->AddDirectory(entry, xattrs, parent_path);
     }
