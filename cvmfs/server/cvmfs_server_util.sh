@@ -1286,7 +1286,7 @@ Supported Commands:
   mkfs            [-w stratum0 url] [-u upstream storage] [-o owner]
                   [-m replicable] [-f union filesystem type] [-s S3 config file]
                   [-g disable auto tags]
-                  [-G timespan for auto tags (default: "2 weeks ago")]
+                  [-G timespan for auto tags (default: \"2 weeks ago\")]
                   [-a hash algorithm (default: SHA-1)]
                   [-z enable garbage collection] [-v volatile content]
                   [-Z compression algorithm (default: zlib)]
@@ -1461,8 +1461,8 @@ Supported Commands:
                   be set with CVMFS_INGEST_DIRECT_S3 in the server config and
                   overridden per invocation with --no-direct-s3.
                   Use --object-list to receive one line per data object as S3
-                  confirms it: "<s3 key> ok created", "<s3 key> ok present" or
-                  "<s3 key> failed -".  Intended for an inherited pipe passed
+                  confirms it: \"<s3 key> ok created\", \"<s3 key> ok present\" or
+                  \"<s3 key> failed -\".  Intended for an inherited pipe passed
                   as /proc/self/fd/<N>; a file or FIFO also works, but opening
                   a FIFO blocks until a reader attaches.  A write error fails
                   the publish.  Requires --direct-s3.
