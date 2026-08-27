@@ -83,11 +83,15 @@ class CommandCheckRepair : public Command {
                              const shash::Any &catalog_hash,
                              uint64_t catalog_size);
 
+  // With count_only the faults are counted but the catalog is left untouched,
+  // which is what a dry run needs to report what it would do.
   bool DropOrphanedEntries(const catalog::CatalogDatabase &db,
                            const std::string &root_path,
-                           uint64_t *num_dropped);
+                           uint64_t *num_dropped,
+                           bool count_only);
   bool FixHardlinkGroups(const catalog::CatalogDatabase &db,
-                         uint64_t *num_fixed);
+                         uint64_t *num_fixed,
+                         bool count_only);
   bool MountpointIsNestedCatalog(const catalog::CatalogDatabase &db,
                                  const std::string &path);
   // Recomputes self counters without changing subtree counters.
@@ -105,12 +109,22 @@ class CommandCheckRepair : public Command {
   // Adds catalogs with reported problems in a check log to *paths.
   bool ParseCheckLog(const std::string &log_path, std::set<std::string> *paths);
 
+  // True for catalogs to repair: anything below a -s path, or named exactly by
+  // a check log.
   bool InSubtree(const std::string &catalog_path) const;
-  bool OnSpine(const std::string &catalog_path) const;
+  // True for catalogs that have to be walked to reach a target, whether or not
+  // they are repaired themselves.
+  bool LeadsToTarget(const std::string &catalog_path) const;
 
   std::string temp_directory_;
   std::string repo_base_path_;
+  // Union of the two sets below, used for reporting and progress tracking.
   std::set<std::string> subtree_paths_;
+  // -s: repair everything underneath, so every descendant is visited.
+  std::set<std::string> recursive_paths_;
+  // -L: a check log is a complete inventory of the faulty catalogs, so only
+  // the catalogs it names are visited and the rest keep their counters.
+  std::set<std::string> exact_paths_;
   std::set<std::string> pending_subtrees_;
   bool is_remote_;
   bool dry_run_;

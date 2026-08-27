@@ -68,8 +68,10 @@ CommandCheckRepair::~CommandCheckRepair() { }
 
 
 bool CommandCheckRepair::InSubtree(const string &catalog_path) const {
-  for (set<string>::const_iterator i = subtree_paths_.begin(),
-                                   iend = subtree_paths_.end();
+  if (exact_paths_.find(catalog_path) != exact_paths_.end())
+    return true;
+  for (set<string>::const_iterator i = recursive_paths_.begin(),
+                                   iend = recursive_paths_.end();
        i != iend;
        ++i) {
     if (IsAncestorOrSelf(*i, catalog_path))
@@ -79,13 +81,12 @@ bool CommandCheckRepair::InSubtree(const string &catalog_path) const {
 }
 
 
-bool CommandCheckRepair::OnSpine(const string &catalog_path) const {
+bool CommandCheckRepair::LeadsToTarget(const string &catalog_path) const {
   for (set<string>::const_iterator i = subtree_paths_.begin(),
                                    iend = subtree_paths_.end();
        i != iend;
        ++i) {
-    if (IsAncestorOrSelf(catalog_path, *i)
-        || IsAncestorOrSelf(*i, catalog_path))
+    if (IsAncestorOrSelf(catalog_path, *i))
       return true;
   }
   return false;
@@ -153,19 +154,34 @@ bool CommandCheckRepair::ParseCheckLog(const string &log_path,
   static const char *kAtMarker = " at ";
   // Statistics errors are emitted after child catalogs; use their hash.
   static const char *kStatsMismatchMarker = "statistics counter mismatch [";
+  // Per-counter detail lines, emitted right before kStatsMismatchMarker.  A
+  // "self_" counter is a fault of the catalog itself, while a "subtree_"
+  // counter is merely the aggregate over its children and is reconciled by
+  // repairing those.  A catalog whose only complaint is an aggregate must
+  // therefore not become a repair target: it is a spine node.  The root
+  // catalog is always such a node, and selecting it would silently widen the
+  // repair to every catalog in the repository.
+  static const char *kStatsDetailMarker = "catalog statistics mismatch: ";
+  static const char *kSelfCounterPrefix = "self_";
   // The remaining lines are summaries, not catalog errors.
   static const char * const kTrailerMarkers[] = {
       "CATALOG PROBLEMS OR OTHER ERRORS FOUND", "Check summary for ", NULL};
-  // Ignore progress and unhashed statistics detail lines.
+  // Ignore progress lines.
   static const char * const kIgnoredPrefixes[] = {
-      "Verifying integrity of",        "Inspecting log of references",
-      "Inspecting tag database",       "no problems found",
-      "Partial replication:",          "  Skipping",
-      "catalog statistics mismatch: ", NULL};
+      "Verifying integrity of",
+      "Inspecting log of references",
+      "Inspecting tag database",
+      "no problems found",
+      "Partial replication:",
+      "  Skipping",
+      NULL};
 
   map<string, string> hash_to_path;
   string current_path;
   bool have_current = false;
+  // Whether the detail lines seen since the last catalog boundary blame a
+  // "self_" counter.
+  bool pending_self_mismatch = false;
   string line;
   while (GetLineFile(f, &line)) {
     if (line.empty())
@@ -190,11 +206,24 @@ bool CommandCheckRepair::ParseCheckLog(const string &log_path,
             line.substr(at_pos + strlen(kAtMarker)));
         have_current = true;
         hash_to_path[hash] = current_path;
+        pending_self_mismatch = false;
+      }
+      continue;
+    }
+
+    if (HasPrefix(line, string(kStatsDetailMarker), false)) {
+      if (HasPrefix(line.substr(strlen(kStatsDetailMarker)),
+                    string(kSelfCounterPrefix), false)) {
+        pending_self_mismatch = true;
       }
       continue;
     }
 
     if (HasPrefix(line, string(kStatsMismatchMarker), false)) {
+      const bool blames_self = pending_self_mismatch;
+      pending_self_mismatch = false;
+      if (!blames_self)
+        continue;
       const size_t close_pos = line.find(']', strlen(kStatsMismatchMarker));
       if (close_pos != string::npos) {
         const string hash = line.substr(
@@ -242,7 +271,8 @@ shash::Any CommandCheckRepair::UploadCatalog(const string &path,
 
 bool CommandCheckRepair::DropOrphanedEntries(const catalog::CatalogDatabase &db,
                                              const string &root_path,
-                                             uint64_t *num_dropped) {
+                                             uint64_t *num_dropped,
+                                             bool count_only) {
   *num_dropped = 0;
 
   const shash::Md5 root_md5 = shash::Md5(shash::AsciiPtr(root_path));
@@ -291,17 +321,18 @@ bool CommandCheckRepair::DropOrphanedEntries(const catalog::CatalogDatabase &db,
       *num_dropped = count_orphans.RetrieveInt64(0);
   }
 
-  retval = catalog::SqlCatalog(
-               db,
-               "DELETE FROM chunks WHERE (md5path_1, md5path_2) "
-               "NOT IN (SELECT m1, m2 FROM reachable);")
-               .Execute()
-           && catalog::SqlCatalog(
-                  db,
-                  "DELETE FROM catalog WHERE (md5path_1, md5path_2) "
-                  "NOT IN (SELECT m1, m2 FROM reachable);")
-                  .Execute()
-           && catalog::SqlCatalog(db, "DROP TABLE reachable;").Execute();
+  retval = count_only
+           || (catalog::SqlCatalog(
+                   db,
+                   "DELETE FROM chunks WHERE (md5path_1, md5path_2) "
+                   "NOT IN (SELECT m1, m2 FROM reachable);")
+                   .Execute()
+               && catalog::SqlCatalog(
+                      db,
+                      "DELETE FROM catalog WHERE (md5path_1, md5path_2) "
+                      "NOT IN (SELECT m1, m2 FROM reachable);")
+                      .Execute());
+  retval = retval && catalog::SqlCatalog(db, "DROP TABLE reachable;").Execute();
   if (!retval) {
     LogCvmfs(kLogCvmfs, kLogStderr, "failed to drop orphaned entries: %s",
              db.GetLastErrorMsg().c_str());
@@ -325,14 +356,30 @@ bool CommandCheckRepair::MountpointIsNestedCatalog(
 
 
 bool CommandCheckRepair::FixHardlinkGroups(const catalog::CatalogDatabase &db,
-                                           uint64_t *num_fixed) {
+                                           uint64_t *num_fixed,
+                                           bool count_only) {
   *num_fixed = 0;
 
+  static const char *kInvalidGroup = "WHERE (hardlinks >> 32) = 0 "
+                                     "AND hardlinks > 1 "
+                                     "AND (flags & :dirflag) = 0;";
+
+  if (count_only) {
+    catalog::SqlCatalog count(
+        db, string("SELECT count(*) FROM catalog ") + kInvalidGroup);
+    if (!count.BindInt64(1, catalog::SqlDirent::kFlagDir)
+        || !count.FetchRow()) {
+      LogCvmfs(kLogCvmfs, kLogStderr, "failed to count hardlink groups: %s",
+               db.GetLastErrorMsg().c_str());
+      return false;
+    }
+    *num_fixed = count.RetrieveInt64(0);
+    return true;
+  }
+
   // Reset invalid group-0 hardlinks to standalone entries.
-  catalog::SqlCatalog fix(db,
-                          "UPDATE catalog SET hardlinks = 1 "
-                          "WHERE (hardlinks >> 32) = 0 AND hardlinks > 1 "
-                          "AND (flags & :dirflag) = 0;");
+  catalog::SqlCatalog fix(
+      db, string("UPDATE catalog SET hardlinks = 1 ") + kInvalidGroup);
   if (!fix.BindInt64(1, catalog::SqlDirent::kFlagDir) || !fix.Execute()) {
     LogCvmfs(kLogCvmfs, kLogStderr, "failed to fix hardlink groups: %s",
              db.GetLastErrorMsg().c_str());
@@ -441,24 +488,48 @@ CommandCheckRepair::RepairResult CommandCheckRepair::RepairCatalog(
       return result;
     }
 
-    if (in_subtree && !dry_run_) {
+    if (in_subtree) {
+      // A dry run counts the same faults but leaves the catalog alone, so that
+      // it reports what a real run would do instead of finding nothing to do.
+      // The counters are not recomputed in that case: with the orphans still
+      // in place they would come out unchanged.
       uint64_t dropped = 0;
       uint64_t fixed = 0;
-      if (!DropOrphanedEntries(*db, path, &dropped)
-          || !FixHardlinkGroups(*db, &fixed)) {
+      if (!DropOrphanedEntries(*db, path, &dropped, dry_run_)
+          || !FixHardlinkGroups(*db, &fixed, dry_run_)) {
         unlink(db_path.c_str());
         return result;
       }
       if (dropped > 0 || fixed > 0) {
         changed = true;
-        LogCvmfs(kLogCvmfs, kLogStdout,
-                 "  %s: dropped %" PRIu64 " orphaned entries, "
-                 "fixed %" PRIu64 " hardlink groups",
-                 display_path.c_str(), dropped, fixed);
+        if (dry_run_) {
+          LogCvmfs(kLogCvmfs, kLogStdout,
+                   "  [dry-run] %s: would drop %" PRIu64 " orphaned entries, "
+                   "fix %" PRIu64 " hardlink groups",
+                   display_path.c_str(), dropped, fixed);
+        } else {
+          LogCvmfs(kLogCvmfs, kLogStdout,
+                   "  %s: dropped %" PRIu64 " orphaned entries, "
+                   "fixed %" PRIu64 " hardlink groups",
+                   display_path.c_str(), dropped, fixed);
+        }
       }
-    } else if (in_subtree && dry_run_) {
-      LogCvmfs(kLogCvmfs, kLogStdout, "  [dry-run] would repair %s",
-               display_path.c_str());
+      // Deleting rows only frees SQLite pages, it does not shrink the file.
+      // Catalogs that consist almost entirely of orphans would otherwise be
+      // re-uploaded at their original size, and the parent would keep
+      // advertising that size in its nested_catalogs row.
+      if (dropped > 0 && !dry_run_) {
+        const int64_t size_before = GetFileSize(db_path);
+        if (!db->Vacuum()) {
+          LogCvmfs(kLogCvmfs, kLogStderr, "failed to compact %s: %s",
+                   display_path.c_str(), db->GetLastErrorMsg().c_str());
+          unlink(db_path.c_str());
+          return result;
+        }
+        LogCvmfs(kLogCvmfs, kLogStdout,
+                 "  %s: compacted %" PRId64 " -> %" PRId64 " bytes",
+                 display_path.c_str(), size_before, GetFileSize(db_path));
+      }
     }
 
     catalog::SqlCatalog list_nested(
@@ -474,27 +545,45 @@ CommandCheckRepair::RepairResult CommandCheckRepair::RepairCatalog(
     }
   }
 
-  // Sum the current counters of every referenced child.
+  // There are two ways to arrive at this catalog's subtree counters.
+  //
+  // Full aggregation sums self+subtree over every referenced child.  It is
+  // exact no matter what the stored aggregate claims, but it has to read every
+  // child, and reading a child means downloading its entire catalog for the
+  // sake of twenty numbers.
+  //
+  // Delta propagation carries the stored aggregate forward and applies only
+  // the changes of the children that were actually repaired.  Untouched
+  // children are then never read at all.  The price is the assumption that the
+  // stored aggregate agreed with its children before the repair.
+  //
+  // Which one is used follows from the walk rather than being chosen: whenever
+  // every child was visited anyway - spine catalogs, and -s targets, which
+  // repair recursively - the full sum is available for free and is used.  Only
+  // a catalog that skipped a child falls back to the delta, which is the case
+  // a check log creates by naming faulty catalogs individually.
   catalog::Counters total_children_stats;
   total_children_stats.SetZero();
+  catalog::DeltaCounters children_delta;
+  children_delta.SetZero();
+  bool skipped_child = false;
+  // A reference was dropped whose counters could not be read, so they cannot
+  // be taken back out of the stored aggregate either.
+  bool dropped_child_unread = false;
+  vector<size_t> skipped_children;
   vector<string> dropped_refs;
   vector<string> updated_refs;
   vector<shash::Any> updated_hashes;
   vector<uint64_t> updated_sizes;
 
   for (size_t i = 0; i < child_paths.size(); ++i) {
-    const bool descend = in_subtree || OnSpine(child_paths[i]);
+    const bool descend = InSubtree(child_paths[i])
+                         || LeadsToTarget(child_paths[i]);
     if (!descend) {
-      catalog::Counters sibling_stats;
-      if (!FetchCatalogCounters(child_hashes[i], &sibling_stats)) {
-        LogCvmfs(kLogCvmfs, kLogStderr,
-                 "failed to read counters for nested catalog %s",
-                 child_paths[i].c_str());
-        unlink(db_path.c_str());
-        return result;
-      }
-      total_children_stats.subtree.Add(sibling_stats.self);
-      total_children_stats.subtree.Add(sibling_stats.subtree);
+      // Nothing below this child is repaired, so it contributes exactly what
+      // it contributed before and need not be read.
+      skipped_child = true;
+      skipped_children.push_back(i);
       continue;
     }
 
@@ -505,6 +594,15 @@ CommandCheckRepair::RepairResult CommandCheckRepair::RepairCatalog(
                display_path.c_str(), child_paths[i].c_str());
       dropped_refs.push_back(child_paths[i]);
       changed = true;
+      // The catalog itself is still readable, so its contribution can be
+      // subtracted from the stored aggregate.
+      catalog::Counters dropped_stats;
+      if (FetchCatalogCounters(child_hashes[i], &dropped_stats)) {
+        children_delta.subtree.Subtract(dropped_stats.self);
+        children_delta.subtree.Subtract(dropped_stats.subtree);
+      } else {
+        dropped_child_unread = true;
+      }
       continue;
     }
 
@@ -520,6 +618,7 @@ CommandCheckRepair::RepairResult CommandCheckRepair::RepairCatalog(
                display_path.c_str(), child_paths[i].c_str());
       dropped_refs.push_back(child_paths[i]);
       changed = true;
+      dropped_child_unread = true;
       continue;
     }
 
@@ -532,6 +631,31 @@ CommandCheckRepair::RepairResult CommandCheckRepair::RepairCatalog(
 
     total_children_stats.subtree.Add(child.new_tree.self);
     total_children_stats.subtree.Add(child.new_tree.subtree);
+    catalog::Counters::Diff(child.old_tree, child.new_tree)
+        .PopulateToParent(&children_delta);
+  }
+
+  // A vanished catalog leaves no counters to subtract, so the delta is
+  // incomplete and the skipped children have to be read after all.
+  if (dropped_child_unread && skipped_child) {
+    LogCvmfs(kLogCvmfs, kLogStdout,
+             "  %s: nested catalog dropped without readable counters, "
+             "falling back to full aggregation",
+             display_path.c_str());
+    for (size_t j = 0; j < skipped_children.size(); ++j) {
+      const size_t i = skipped_children[j];
+      catalog::Counters sibling_stats;
+      if (!FetchCatalogCounters(child_hashes[i], &sibling_stats)) {
+        LogCvmfs(kLogCvmfs, kLogStderr,
+                 "failed to read counters for nested catalog %s",
+                 child_paths[i].c_str());
+        unlink(db_path.c_str());
+        return result;
+      }
+      total_children_stats.subtree.Add(sibling_stats.self);
+      total_children_stats.subtree.Add(sibling_stats.subtree);
+    }
+    skipped_child = false;
   }
   {
     const std::unique_ptr<catalog::CatalogDatabase> db(
@@ -595,8 +719,13 @@ CommandCheckRepair::RepairResult CommandCheckRepair::RepairCatalog(
         return result;
       }
     }
-    // Spine catalogs keep their self counters.
-    new_counters.subtree = total_children_stats.subtree;
+    // Spine catalogs keep their self counters.  new_counters still carries the
+    // stored aggregate, which is the base the delta applies to.
+    if (skipped_child) {
+      new_counters.subtree.Add(children_delta.subtree);
+    } else {
+      new_counters.subtree = total_children_stats.subtree;
+    }
 
     changed = changed
               || (new_counters.GetValues() != result.old_tree.GetValues());
@@ -642,11 +771,13 @@ int CommandCheckRepair::Main(const ArgumentList &args) {
   const string spooler = *args.find('u')->second;
   const string manifest_path = *args.find('o')->second;
   if (args.find('s') != args.end())
-    subtree_paths_.insert(MakeCanonicalPath(*args.find('s')->second));
+    recursive_paths_.insert(MakeCanonicalPath(*args.find('s')->second));
   if (args.find('L') != args.end()) {
-    if (!ParseCheckLog(*args.find('L')->second, &subtree_paths_))
+    if (!ParseCheckLog(*args.find('L')->second, &exact_paths_))
       return 1;
   }
+  subtree_paths_ = recursive_paths_;
+  subtree_paths_.insert(exact_paths_.begin(), exact_paths_.end());
   if (subtree_paths_.empty()) {
     LogCvmfs(kLogCvmfs, kLogStderr,
              "no subtree to repair given (use -s and/or -L)");
