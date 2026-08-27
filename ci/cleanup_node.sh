@@ -18,4 +18,4 @@ if [ -e /etc/fuse.conf ]; then
 fi
 [ -f /var/lock/subsys/autofs ] && sudo /sbin/service autofs restart
 sudo rm -rf /cvmfs
-sudo rm -rf /usr/bin/cvmfs-* /usr/bin/cvmfs_* /sbin/mount.cvmfs /etc/auto.cvmfs /etc/init.d/cvmfs
+sudo rm -rf /usr/bin/cvmfs-* /usr/bin/cvmfs_* /usr/bin/mount.cvmfs /usr/sbin/mount.cvmfs /etc/auto.cvmfs /etc/init.d/cvmfs

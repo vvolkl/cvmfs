@@ -697,7 +697,10 @@ systemctl daemon-reload
 %if 0%{?systemd_autofs_patch}
 /usr/lib/systemd/system/autofs.service.d/50-cvmfs.conf
 %endif
-/sbin/mount.cvmfs
+%{_bindir}/mount.cvmfs
+%if 0%{?fedora} < 42
+%{_sbindir}/mount.cvmfs
+%endif
 %dir %{_sysconfdir}/cvmfs/config.d
 %dir %{_sysconfdir}/cvmfs/domain.d
 %attr(700,cvmfs,cvmfs) %dir /var/lib/cvmfs

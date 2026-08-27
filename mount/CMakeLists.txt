@@ -169,6 +169,23 @@ else (MACOSX)
     PERMISSIONS   OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
   )
 
+  # util-linux looks for mount helpers in /usr/sbin.  Keep a compatibility
+  # link for systems where /usr/bin and /usr/sbin are still separate.  Fedora
+  # 42+ unifies them, and Arch Linux already uses /usr/bin for mount helpers.
+  if (NOT ARCHLINUX AND NOT (DISTRO_ID STREQUAL "fedora" AND
+                             DISTRO_VERSION VERSION_GREATER_EQUAL "42"))
+    install (CODE "
+      if (\"\$ENV{DESTDIR}\" STREQUAL \"\")
+        execute_process(COMMAND ln -sf ../bin/mount.cvmfs /usr/sbin/mount.cvmfs)
+      else ()
+        execute_process(COMMAND \${CMAKE_COMMAND} -E make_directory
+          \$ENV{DESTDIR}/usr/sbin)
+        execute_process(COMMAND ln -sf ../bin/mount.cvmfs
+          \$ENV{DESTDIR}/usr/sbin/mount.cvmfs)
+      endif ()
+    ")
+  endif ()
+
   install (
     FILES         config.sh default.conf
     DESTINATION   "${SYSCONF_INSTALL_DIR}/cvmfs"

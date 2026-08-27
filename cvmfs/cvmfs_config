@@ -502,10 +502,10 @@ cvmfs_chksetup() {
       tools="${SBIN_BASE}/mount_cvmfs"
     fi
   elif [ "$sys_arch" = "Linux" ]; then
-    if [ -d ${SBIN_BASE} ]; then
-      tools="${SBIN_BASE}/mount.cvmfs"
-    else
-      tools="${INSTALL_BASE}/bin/mount.cvmfs"
+    tools="${INSTALL_BASE}/bin/mount.cvmfs"
+    # Fall back to the legacy mount-helper location used by older packages.
+    if [ ! -x "$tools" ]; then
+      tools="${INSTALL_BASE}/sbin/mount.cvmfs"
     fi
   fi
 
