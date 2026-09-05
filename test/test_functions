@@ -1588,6 +1588,84 @@ get_s3_repo_url() {
   echo "${s3_stratum0_url}${repo_name}"
 }
 
+# Lists object keys under a prefix in the S3 bucket configured by
+# CVMFS_TEST_S3_CONFIG (path-style ListObjectsV2, SigV4, stdlib only).
+# Needed for object stores like garage that have no filesystem-visible
+# layout under CVMFS_TEST_S3_STORAGE.
+s3_list_objects() {
+  local prefix="$1"
+  [ -f "$CVMFS_TEST_S3_CONFIG" ] || die "\$CVMFS_TEST_S3_CONFIG needs to point to a file!"
+  python3 - "$CVMFS_TEST_S3_CONFIG" "$prefix" <<'EOF'
+import datetime, hashlib, hmac, sys, urllib.parse, urllib.request
+import xml.etree.ElementTree as ET
+
+conf = {}
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if "=" in line and not line.startswith("#"):
+        k, v = line.split("=", 1)
+        conf[k.strip()] = v.strip().strip('"').strip("'")
+prefix = sys.argv[2]
+
+host = conf["CVMFS_S3_HOST"]
+bucket = conf["CVMFS_S3_BUCKET"]
+region = conf.get("CVMFS_S3_REGION", "us-east-1")
+access = conf["CVMFS_S3_ACCESS_KEY"]
+secret = conf["CVMFS_S3_SECRET_KEY"]
+scheme = "https" if conf.get("CVMFS_S3_USE_HTTPS", "false").lower() == "true" else "http"
+dns_buckets = conf.get("CVMFS_S3_DNS_BUCKETS", "true").lower() == "true"
+if dns_buckets:
+    req_host, path = "%s.%s" % (bucket, host), "/"
+else:
+    req_host, path = host, "/" + bucket + "/"
+
+
+def sign(key, msg):
+    return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+
+def request(params):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    amzdate = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    qs = "&".join("%s=%s" % (urllib.parse.quote(k, safe="-_.~"),
+                             urllib.parse.quote(v, safe="-_.~"))
+                  for k, v in sorted(params.items()))
+    payload_hash = hashlib.sha256(b"").hexdigest()
+    headers = {"host": req_host, "x-amz-content-sha256": payload_hash,
+               "x-amz-date": amzdate}
+    signed = ";".join(sorted(headers))
+    canonical_headers = "".join("%s:%s\n" % (k, headers[k]) for k in sorted(headers))
+    canonical = "\n".join(["GET", path, qs, canonical_headers, signed, payload_hash])
+    scope = "%s/%s/s3/aws4_request" % (datestamp, region)
+    to_sign = "\n".join(["AWS4-HMAC-SHA256", amzdate, scope,
+                         hashlib.sha256(canonical.encode()).hexdigest()])
+    k = sign(("AWS4" + secret).encode(), datestamp)
+    k = sign(k, region)
+    k = sign(k, "s3")
+    k = sign(k, "aws4_request")
+    signature = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
+    headers["Authorization"] = (
+        "AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s"
+        % (access, scope, signed, signature))
+    url = "%s://%s%s?%s" % (scheme, req_host, path, qs)
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return resp.read()
+
+
+params = {"list-type": "2", "prefix": prefix, "max-keys": "1000"}
+while True:
+    root = ET.fromstring(request(params))
+    ns = root.tag.split("}")[0] + "}" if root.tag.startswith("{") else ""
+    for c in root.iter(ns + "Contents"):
+        print(c.find(ns + "Key").text)
+    if root.findtext(ns + "IsTruncated") != "true":
+        break
+    params["continuation-token"] = root.findtext(ns + "NextContinuationToken")
+EOF
+}
+
 get_repo_url() {
   local repo_name="${1:-}"
   if [ "${CVMFS_TEST_S3_CONFIG:-}" != "" ]; then

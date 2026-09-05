@@ -3,8 +3,9 @@
 # Profile: s3
 #
 # Runs the CernVM-FS server integration test suite against an S3-compatible
-# backend.  CVMFS_TEST_S3_CONFIG, CVMFS_TEST_HTTP_BASE, and
-# CVMFS_TEST_S3_STORAGE must be set in the environment before calling run.sh;
+# backend.  CVMFS_TEST_S3_CONFIG and CVMFS_TEST_HTTP_BASE must be set in the
+# environment before calling run.sh (CVMFS_TEST_S3_STORAGE is optional and only
+# used when the backend exposes objects on the local filesystem);
 # see test/common/container/s3-integration/docker-compose.yml for the
 # containerized stack used by .github/workflows/ci_s3_integration.yml.
 #
@@ -85,7 +86,7 @@ PROFILE_EXCLUSIONS="\
 
 profile_setup() {
   local missing=""
-  for var in CVMFS_TEST_S3_CONFIG CVMFS_TEST_HTTP_BASE CVMFS_TEST_S3_STORAGE; do
+  for var in CVMFS_TEST_S3_CONFIG CVMFS_TEST_HTTP_BASE; do
     if [ -z "$(eval "echo \"\${$var}\"")" ]; then
       missing="$missing $var"
     fi

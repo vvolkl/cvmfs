@@ -275,12 +275,17 @@ cvmfs_run_test() {
     local reflog_url="$(get_repo_url test.repo.org)/.cvmfsreflog"
     curl -s $reflog_url > reflog.db
     sqlite3 reflog.db "select hash from refs where type=0;" | sort | uniq > reflog_catalogs.txt
-    if running_on_s3 ; then
-        local repo_storage=${CVMFS_TEST_S3_STORAGE}/test.repo.org
+    if running_on_s3 && [ ! -d "${CVMFS_TEST_S3_STORAGE}/test.repo.org/data" ]; then
+        # Object store without a filesystem-visible layout (e.g. garage)
+        s3_list_objects test.repo.org/data/ | grep 'C$' || return 112
     else
-        local repo_storage=$(get_local_repo_storage test.repo.org)
-    fi
-    (set +e; find ${repo_storage}/data -type f -name *C; true) | rev | cut -d"/" -f 1-2 | rev | tr -d "/C" | sort | uniq > actual_catalogs.txt
+        if running_on_s3 ; then
+            local repo_storage=${CVMFS_TEST_S3_STORAGE}/test.repo.org
+        else
+            local repo_storage=$(get_local_repo_storage test.repo.org)
+        fi
+        (set +e; find ${repo_storage}/data -type f -name *C; true)
+    fi | rev | cut -d"/" -f 1-2 | rev | tr -d "/C" | sort | uniq > actual_catalogs.txt
     diff reflog_catalogs.txt actual_catalogs.txt || return 111
 
     return 0
