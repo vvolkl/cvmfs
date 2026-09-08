@@ -2263,8 +2263,8 @@ static void cvmfs_destroy(void *unused __attribute__((unused))) {
   // The debug log is already closed at this point
   LogCvmfs(kLogCvmfs, kLogDebug, "cvmfs_destroy");
 #ifdef FUSE_CAP_PASSTHROUGH
+  // The tracker only exists if passthrough was both available and enabled
   pthread_mutex_lock(&fuse_passthru_tracker_lock);
-  assert(fuse_passthru_tracker);
   delete fuse_passthru_tracker;
   fuse_passthru_tracker = NULL;
   pthread_mutex_unlock(&fuse_passthru_tracker_lock);
