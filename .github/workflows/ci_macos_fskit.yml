@@ -79,9 +79,6 @@ jobs:
           sudo chown root:wheel /etc/synthetic.conf
           sudo chmod a+r /etc/synthetic.conf
           sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t || true
-          # FSKit mounts can't load code signatures; enable Developer Mode
-          # so ad-hoc signed binaries from CVMFS repos can execute
-          sudo DevToolsSecurity -enable || true
           sudo cvmfs_config setup
           sudo cvmfs_config chksetup || exit 1
 

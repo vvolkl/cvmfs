@@ -2440,16 +2440,25 @@ EOF
           mkdir -p /Volumes/cvmfs
           local firmlink_target=/Volumes/cvmfs
           # Compatibility symlink: repos may contain absolute symlinks
-          # pointing to /Users/Shared/cvmfs/...
-          if [ ! -e /Users/Shared/cvmfs ]; then
+          # pointing to /Users/Shared/cvmfs/...  A previous non-FSKit setup
+          # leaves a real directory behind, which silently shadows the
+          # symlink and makes every such repository symlink dangle.
+          if [ -L /Users/Shared/cvmfs ]; then
+            if [ "$(readlink /Users/Shared/cvmfs)" != /Volumes/cvmfs ]; then
+              rm -f /Users/Shared/cvmfs
+              ln -s /Volumes/cvmfs /Users/Shared/cvmfs
+            fi
+          elif [ -d /Users/Shared/cvmfs ]; then
+            # Only replace it if nothing was left in it, e.g. a stale mount
+            if rmdir /Users/Shared/cvmfs 2>/dev/null; then
+              ln -s /Volumes/cvmfs /Users/Shared/cvmfs
+            else
+              echo "Warning: /Users/Shared/cvmfs is a non-empty directory."
+              echo "Repositories with absolute symlinks into /Users/Shared/cvmfs"
+              echo "will not resolve.  Remove it and re-run 'cvmfs_config setup'."
+            fi
+          elif [ ! -e /Users/Shared/cvmfs ]; then
             ln -s /Volumes/cvmfs /Users/Shared/cvmfs
-          fi
-          # FSKit FUSE mounts prevent the kernel from loading code
-          # signatures of executables.  Enable Developer Mode so that
-          # ad-hoc signed (and unsigned) binaries can be executed from
-          # CVMFS mount points.
-          if command -v DevToolsSecurity >/dev/null 2>&1; then
-            DevToolsSecurity -enable 2>/dev/null || true
           fi
         else
           mkdir -p /Users/shared/cvmfs
