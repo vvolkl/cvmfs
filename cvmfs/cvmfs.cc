@@ -1663,7 +1663,16 @@ static void cvmfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off,
   }
 
   // Push it to user
+#ifdef __APPLE__
+  // macFUSE's FSKit transport carries replies >= 64 KiB only through the
+  // zero-copy reply buffer, which libfuse uses for fuse_reply_data() but not
+  // for fuse_reply_buf(); with the latter such reads fail with EIO.
+  struct fuse_bufvec bufv = FUSE_BUFVEC_INIT(overall_bytes_fetched);
+  bufv.buf[0].mem = data;
+  fuse_reply_data(req, &bufv, FUSE_BUF_NO_SPLICE);
+#else
   fuse_reply_buf(req, data, overall_bytes_fetched);
+#endif
   LogCvmfs(kLogCvmfs, kLogDebug, "pushed %d bytes to user",
            overall_bytes_fetched);
 }
