@@ -1,0 +1,491 @@
+#!/bin/bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: bash test/src/109-proxy-kill-reproducer/run_test [--dry-run]
+
+Manual proxy-kill reproducer for issue #3563.
+
+Exit codes:
+  0  recovery observed after proxy restart
+  2  no recovery observed after proxy restart (bug reproduced)
+  1  unsupported environment / missing prerequisite / usage error
+
+Prerequisites:
+  - Linux environment (for example a Lima VM)
+  - cvmfs2 installed and repository client config already working for atlas.cern.ch
+  - pre-authenticated sudo (run: sudo -v)
+  - python3, curl, timeout, mountpoint
+
+Useful overrides:
+  REPO=atlas.cern.ch
+  CVMFS2_BIN=/path/to/cvmfs2
+  SERVER_URL=http://cvmfs-stratum-one.cern.ch/cvmfs/atlas.cern.ch
+  KEYS_DIR=/etc/cvmfs/keys/cern.ch
+  PUBLIC_KEY=/etc/cvmfs/keys/atlas.cern.ch.pub
+  PROXY_PORT=33128
+  STATE_DIR=/tmp/issue3563-repro
+  KEEP_STATE=1
+  WORKLOAD_FILES=1000
+  PROBE_COUNT=16
+  RECOVERY_ATTEMPTS=2
+EOF
+}
+
+FROM_HARNESS=0
+if [ "${1:-}" = "--from-harness" ]; then
+  FROM_HARNESS=1
+  shift
+  HARNESS_LOGFILE="${1:-}"
+  shift || true
+  HARNESS_SCRIPT_LOCATION="${1:-}"
+  shift || true
+fi
+
+DRY_RUN=0
+case "${1:-}" in
+  "") ;;
+  --dry-run) DRY_RUN=1; shift ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 1 ;;
+esac
+[ "$#" -eq 0 ] || { usage >&2; exit 1; }
+
+log() {
+  printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
+}
+
+die() {
+  log "ERROR: $*" >&2
+  exit 1
+}
+
+REPO="${REPO:-atlas.cern.ch}"
+REPO_DOMAIN="${REPO#*.}"
+CVMFS2_BIN="${CVMFS2_BIN:-$(command -v cvmfs2 || true)}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+CURL_BIN="${CURL_BIN:-curl}"
+TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
+KEEP_STATE="${KEEP_STATE:-1}"
+STATE_DIR="${STATE_DIR:-}"
+SERVER_URL="${SERVER_URL:-}"
+KEYS_DIR="${KEYS_DIR:-}"
+PUBLIC_KEY="${PUBLIC_KEY:-}"
+PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
+PROXY_PORT="${PROXY_PORT:-33128}"
+PROXY_URL="http://${PROXY_HOST}:${PROXY_PORT}"
+WORKLOAD_FILES="${WORKLOAD_FILES:-1000}"
+PROBE_COUNT="${PROBE_COUNT:-16}"
+READ_TIMEOUT="${READ_TIMEOUT:-3}"
+WARMUP_SUCCESS_TARGET="${WARMUP_SUCCESS_TARGET:-32}"
+WARMUP_WAIT_SECONDS="${WARMUP_WAIT_SECONDS:-60}"
+OUTAGE_SETTLE_SECONDS="${OUTAGE_SETTLE_SECONDS:-8}"
+RECOVERY_ATTEMPTS="${RECOVERY_ATTEMPTS:-2}"
+RECOVERY_PAUSE_SECONDS="${RECOVERY_PAUSE_SECONDS:-10}"
+FIND_LIMIT="${FIND_LIMIT:-$((WORKLOAD_FILES + PROBE_COUNT * (RECOVERY_ATTEMPTS + 1)))}"
+
+PROXY_PID=""
+CVMFS_PID=""
+WORKLOAD_PID=""
+STATE_READY=0
+RECOVERY_RESULT="unknown"
+
+cleanup() {
+  set +e
+  stop_workload
+  if [ -n "$PROXY_PID" ] && kill -0 "$PROXY_PID" >/dev/null 2>&1; then
+    kill "$PROXY_PID" >/dev/null 2>&1
+    wait "$PROXY_PID" >/dev/null 2>&1
+  fi
+  if [ -n "${MOUNT_DIR:-}" ] && mountpoint -q "$MOUNT_DIR"; then
+    "$TIMEOUT_BIN" 15s sudo umount "$MOUNT_DIR" >/dev/null 2>&1 || \
+      log "WARN: timed out unmounting ${MOUNT_DIR}" >&2
+  fi
+  if [ -n "$CVMFS_PID" ] && kill -0 "$CVMFS_PID" >/dev/null 2>&1; then
+    kill "$CVMFS_PID" >/dev/null 2>&1
+    wait "$CVMFS_PID" >/dev/null 2>&1
+  fi
+  if [ "$STATE_READY" -eq 1 ]; then
+    if [ "$KEEP_STATE" = "0" ]; then
+      rm -rf "$STATE_DIR"
+    else
+      log "State kept in $STATE_DIR"
+    fi
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+sanitize_config_value() {
+  printf '%s\n' "$1" | sed -e 's/[[:space:]]*#.*$//' \
+                             -e 's/^[[:space:]]*//'      \
+                             -e 's/[[:space:]]*$//'      \
+                             -e "s/^'//"                \
+                             -e "s/'$//"                \
+                             -e 's/^"//'                \
+                             -e 's/"$//'
+}
+
+showconfig_value() {
+  local key="$1"
+  local value=""
+  command -v cvmfs_config >/dev/null 2>&1 || return 1
+  value="$(cvmfs_config showconfig "$REPO" 2>/dev/null | awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); exit }')"
+  sanitize_config_value "$value"
+}
+
+resolve_repo_settings() {
+  [ -n "$SERVER_URL" ] || SERVER_URL="$(showconfig_value CVMFS_SERVER_URL || true)"
+  [ -n "$SERVER_URL" ] || SERVER_URL="http://cvmfs-stratum-one.cern.ch/cvmfs/${REPO}"
+
+  [ -n "$PUBLIC_KEY" ] || PUBLIC_KEY="$(showconfig_value CVMFS_PUBLIC_KEY || true)"
+  if [ -z "$PUBLIC_KEY" ] && [ -z "$KEYS_DIR" ]; then
+    KEYS_DIR="$(showconfig_value CVMFS_KEYS_DIR || true)"
+  fi
+  if [ -z "$PUBLIC_KEY" ] && [ -z "$KEYS_DIR" ]; then
+    if [ -d "/etc/cvmfs/keys/${REPO_DOMAIN}" ]; then
+      KEYS_DIR="/etc/cvmfs/keys/${REPO_DOMAIN}"
+    elif [ -f "/etc/cvmfs/keys/${REPO}.pub" ]; then
+      PUBLIC_KEY="/etc/cvmfs/keys/${REPO}.pub"
+    fi
+  fi
+  [ -n "$PUBLIC_KEY" ] || [ -n "$KEYS_DIR" ] || die "Could not determine CVMFS key material for ${REPO}; set KEYS_DIR or PUBLIC_KEY explicitly"
+  HEALTH_URL="${HEALTH_URL:-${SERVER_URL%%;*}/.cvmfspublished}"
+}
+
+check_prereqs() {
+  [ "$(uname -s)" = "Linux" ] || die "This reproducer currently supports Linux/Lima guests only"
+  [ -n "$CVMFS2_BIN" ] || die "Could not find cvmfs2; set CVMFS2_BIN=/path/to/cvmfs2"
+  [ -x "$CVMFS2_BIN" ] || die "cvmfs2 binary is not executable: $CVMFS2_BIN"
+  require_cmd "$PYTHON_BIN"
+  require_cmd "$CURL_BIN"
+  require_cmd "$TIMEOUT_BIN"
+  require_cmd mountpoint
+  require_cmd find
+  require_cmd sudo
+  sudo -n true >/dev/null 2>&1 || die "This script needs pre-authenticated sudo; run 'sudo -v' first"
+  [ -e /dev/fuse ] || die "/dev/fuse is missing; run inside a CVMFS-capable Linux VM"
+}
+
+prepare_state() {
+  if [ -z "$STATE_DIR" ]; then
+    STATE_DIR="$(mktemp -d /tmp/issue3563-repro.XXXXXX)"
+  else
+    mkdir -p "$STATE_DIR"
+  fi
+  CACHE_DIR="$STATE_DIR/cache"
+  MOUNT_DIR="$STATE_DIR/mnt"
+  FILELIST="$STATE_DIR/filelist.txt"
+  PROXY_SCRIPT="$STATE_DIR/proxy.py"
+  PROXY_LOG="$STATE_DIR/proxy.log"
+  CVMFS_LOG="$STATE_DIR/cvmfs.log"
+  WORKLOAD_LOG="$STATE_DIR/workload.log"
+  PROBE_LOG="$STATE_DIR/probes.log"
+  CONFIG_FILE="$STATE_DIR/local.conf"
+  mkdir -p "$CACHE_DIR" "$MOUNT_DIR"
+  STATE_READY=1
+}
+
+write_proxy_script() {
+  cat > "$PROXY_SCRIPT" <<'PYEOF'
+import http.client
+import http.server
+import socketserver
+import sys
+import urllib.parse
+
+
+class ProxyHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):
+        self._proxy(True)
+
+    def do_HEAD(self):
+        self._proxy(False)
+
+    def do_CONNECT(self):
+        self.send_error(501, "CONNECT is not supported by this reproducer proxy")
+
+    def log_message(self, fmt, *args):
+        sys.stdout.write("%s - - [%s] %s\n" % (
+            self.client_address[0],
+            self.log_date_time_string(),
+            fmt % args,
+        ))
+        sys.stdout.flush()
+
+    def _proxy(self, send_body):
+        target = urllib.parse.urlsplit(self.path)
+        if target.scheme != "http" or not target.netloc:
+            self.send_error(400, "expected absolute http:// URL from client")
+            return
+
+        path = urllib.parse.urlunsplit(("", "", target.path or "/", target.query, ""))
+        headers = {
+            key: value
+            for key, value in self.headers.items()
+            if key.lower() not in ("proxy-connection", "connection", "keep-alive", "transfer-encoding")
+        }
+        headers["Connection"] = "close"
+        conn = http.client.HTTPConnection(target.hostname, target.port or 80, timeout=30)
+        try:
+            conn.request(self.command, path, headers=headers)
+            resp = conn.getresponse()
+            self.send_response(resp.status, resp.reason)
+            for key, value in resp.getheaders():
+                if key.lower() in ("connection", "proxy-connection", "transfer-encoding"):
+                    continue
+                self.send_header(key, value)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if send_body:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except Exception as exc:  # pragma: no cover - runtime helper only
+            self.send_error(502, "proxy fetch failed: %s" % exc)
+        finally:
+            conn.close()
+
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def main(argv):
+    host = argv[1]
+    port = int(argv[2])
+    server = ThreadedHTTPServer((host, port), ProxyHandler)
+    print("proxy listening on %s:%d" % (host, port), flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main(sys.argv)
+PYEOF
+}
+
+write_config() {
+  local mount_opts="disable_watchdog,system_mount,allow_other,uid=0,gid=0"
+  command -v fusermount3 >/dev/null 2>&1 && mount_opts="${mount_opts},libfuse=3"
+  cat > "$CONFIG_FILE" <<EOF
+CVMFS_CACHE_BASE=${CACHE_DIR}
+CVMFS_RELOAD_SOCKETS=${CACHE_DIR}
+CVMFS_SERVER_URL=${SERVER_URL}
+CVMFS_HTTP_PROXY=${PROXY_URL}
+CVMFS_QUOTA_LIMIT=-1
+CVMFS_MAX_RETRIES=1000
+CVMFS_BACKOFF_INIT=2
+CVMFS_BACKOFF_MAX=8
+CVMFS_TIMEOUT=3
+CVMFS_TIMEOUT_DIRECT=3
+CVMFS_DEBUGLOG=${CVMFS_LOG}
+EOF
+  if [ -n "$PUBLIC_KEY" ]; then
+    printf 'CVMFS_PUBLIC_KEY=%s\n' "$PUBLIC_KEY" >> "$CONFIG_FILE"
+  else
+    printf 'CVMFS_KEYS_DIR=%s\n' "$KEYS_DIR" >> "$CONFIG_FILE"
+  fi
+  MOUNT_OPTIONS="config=${CONFIG_FILE},${mount_opts}"
+}
+
+wait_for_proxy_port() {
+  local want_state="$1"
+  local tries=20
+  while [ "$tries" -gt 0 ]; do
+    if "$CURL_BIN" --silent --max-time 1 "http://${PROXY_HOST}:${PROXY_PORT}/" >/dev/null 2>&1; then
+      [ "$want_state" = up ] && return 0
+    else
+      [ "$want_state" = down ] && return 0
+    fi
+    tries=$((tries - 1))
+    sleep 1
+  done
+  return 1
+}
+
+port_is_listening() {
+  "$PYTHON_BIN" - "$PROXY_HOST" "$PROXY_PORT" <<'PYEOF'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(1)
+try:
+    sys.exit(0 if sock.connect_ex((sys.argv[1], int(sys.argv[2]))) == 0 else 1)
+finally:
+    sock.close()
+PYEOF
+}
+
+start_proxy() {
+  port_is_listening && die "Proxy port ${PROXY_PORT} is already in use on ${PROXY_HOST}; set PROXY_PORT to a free localhost port"
+  touch "$PROXY_LOG"
+  log "=== proxy start ===" >> "$PROXY_LOG"
+  "$PYTHON_BIN" -u "$PROXY_SCRIPT" "$PROXY_HOST" "$PROXY_PORT" >> "$PROXY_LOG" 2>&1 &
+  PROXY_PID=$!
+  wait_for_proxy_port up || die "Proxy failed to start on ${PROXY_URL}; see ${PROXY_LOG}"
+  log "Proxy started with pid ${PROXY_PID} on ${PROXY_URL}"
+}
+
+stop_proxy() {
+  [ -n "$PROXY_PID" ] || die "No proxy pid recorded"
+  kill "$PROXY_PID" >/dev/null 2>&1 || true
+  wait "$PROXY_PID" >/dev/null 2>&1 || true
+  wait_for_proxy_port down || die "Proxy did not stop cleanly on ${PROXY_URL}"
+  log "Proxy stopped"
+}
+
+mount_repo() {
+  : > "$CVMFS_LOG"
+  sudo "$CVMFS2_BIN" -f -d -o "$MOUNT_OPTIONS" "$REPO" "$MOUNT_DIR" >> "$CVMFS_LOG" 2>&1 &
+  CVMFS_PID=$!
+  local tries=30
+  while [ "$tries" -gt 0 ]; do
+    if mountpoint -q "$MOUNT_DIR"; then
+      log "Mounted ${REPO} on ${MOUNT_DIR}"
+      return 0
+    fi
+    kill -0 "$CVMFS_PID" >/dev/null 2>&1 || break
+    tries=$((tries - 1))
+    sleep 1
+  done
+  die "Failed to mount ${REPO}; inspect ${CVMFS_LOG}"
+}
+
+collect_filelist() {
+  set +o pipefail
+  find "$MOUNT_DIR" -type f ! -name '.cvmfs*' -print | head -n "$FIND_LIMIT" > "$FILELIST"
+  set -o pipefail
+  mapfile -t FILES < "$FILELIST"
+  local needed=$((WORKLOAD_FILES + PROBE_COUNT * (RECOVERY_ATTEMPTS + 1)))
+  [ "${#FILES[@]}" -ge "$needed" ] || die "Only found ${#FILES[@]} files under ${MOUNT_DIR}; need at least ${needed}"
+  log "Collected ${#FILES[@]} candidate files"
+}
+
+run_read_range() {
+  local label="$1"
+  local start="$2"
+  local count="$3"
+  local logfile="$4"
+  local ok=0
+  local fail=0
+  local seq path rc
+  for ((seq=start; seq<start+count; seq++)); do
+    path="${FILES[$((seq - 1))]:-}"
+    [ -n "$path" ] || die "Missing file entry for seq ${seq}"
+    if "$TIMEOUT_BIN" "${READ_TIMEOUT}s" dd if="$path" of=/dev/null bs=128K status=none 2>>"$STATE_DIR/read-errors.log"; then
+      rc=0
+      ok=$((ok + 1))
+    else
+      rc=$?
+      fail=$((fail + 1))
+    fi
+    printf '%s label=%s seq=%s rc=%s path=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$label" "$seq" "$rc" "$path" >> "$logfile"
+  done
+  echo "${ok} ${fail}"
+}
+
+stop_workload() {
+  [ -n "$WORKLOAD_PID" ] || return 0
+  pkill -f "dd if=${MOUNT_DIR}/" >/dev/null 2>&1 || true
+  kill "$WORKLOAD_PID" >/dev/null 2>&1 || true
+  wait "$WORKLOAD_PID" >/dev/null 2>&1 || true
+  WORKLOAD_PID=""
+}
+
+start_workload() {
+  : > "$WORKLOAD_LOG"
+  run_read_range workload 1 "$WORKLOAD_FILES" "$WORKLOAD_LOG" >/dev/null &
+  WORKLOAD_PID=$!
+  log "Started workload pid ${WORKLOAD_PID} across ${WORKLOAD_FILES} files"
+}
+
+wait_for_warmup() {
+  local waited=0
+  while [ "$waited" -lt "$WARMUP_WAIT_SECONDS" ]; do
+    local ok=0
+    if [ -f "$WORKLOAD_LOG" ]; then
+      ok=$(grep -c ' label=workload .* rc=0 ' "$WORKLOAD_LOG" 2>/dev/null || true)
+    fi
+    if [ "$ok" -ge "$WARMUP_SUCCESS_TARGET" ]; then
+      log "Warmup reached ${ok} successful reads"
+      return 0
+    fi
+    kill -0 "$WORKLOAD_PID" >/dev/null 2>&1 || die "Workload exited before warmup completed; see ${WORKLOAD_LOG}"
+    waited=$((waited + 1))
+    sleep 1
+  done
+  die "Timed out waiting for warmup success threshold; see ${WORKLOAD_LOG}"
+}
+
+probe_proxy_health() {
+  "$CURL_BIN" --silent --show-error --head --max-time 10 -x "$PROXY_URL" "$HEALTH_URL" >/dev/null
+}
+
+report_final() {
+  stop_workload
+  log "Recovery result: ${RECOVERY_RESULT}"
+  log "Logs: proxy=${PROXY_LOG} cvmfs=${CVMFS_LOG} workload=${WORKLOAD_LOG} probes=${PROBE_LOG}"
+  case "$RECOVERY_RESULT" in
+    recovered) exit 0 ;;
+    not-recovered) exit 2 ;;
+    *) die "Reproducer ended without a final recovery verdict" ;;
+  esac
+}
+
+check_prereqs
+resolve_repo_settings
+prepare_state
+write_proxy_script
+write_config
+
+log "Using repo=${REPO} server_url=${SERVER_URL} proxy=${PROXY_URL} state=${STATE_DIR}"
+if [ "$DRY_RUN" -eq 1 ]; then
+  log "Dry run only; generated ${CONFIG_FILE} and ${PROXY_SCRIPT} without mounting or network activity"
+  exit 0
+fi
+
+start_proxy
+probe_proxy_health || die "Proxy is listening but cannot fetch ${HEALTH_URL}; see ${PROXY_LOG}"
+mount_repo
+collect_filelist
+start_workload
+wait_for_warmup
+
+log "Stopping proxy to trigger outage"
+stop_proxy
+sleep "$OUTAGE_SETTLE_SECONDS"
+
+OUTAGE_RANGE_START=$((WORKLOAD_FILES + 1))
+read -r outage_ok outage_fail < <(run_read_range outage "$OUTAGE_RANGE_START" "$PROBE_COUNT" "$PROBE_LOG")
+log "Outage probe: ok=${outage_ok} fail=${outage_fail}"
+[ "$outage_fail" -gt 0 ] || die "Proxy outage did not produce any failed fresh reads; reproduce state was not meaningful"
+
+log "Restarting proxy"
+start_proxy
+probe_proxy_health || die "Proxy restart did not restore health for ${HEALTH_URL}; see ${PROXY_LOG}"
+
+RECOVERY_RESULT="not-recovered"
+for attempt in $(seq 1 "$RECOVERY_ATTEMPTS"); do
+  range_start=$((WORKLOAD_FILES + PROBE_COUNT * attempt + 1))
+  read -r ok fail < <(run_read_range "recovery_${attempt}" "$range_start" "$PROBE_COUNT" "$PROBE_LOG")
+  log "Recovery probe ${attempt}: ok=${ok} fail=${fail}"
+  if [ "$ok" -gt 0 ]; then
+    RECOVERY_RESULT="recovered"
+    break
+  fi
+  if [ "$attempt" -lt "$RECOVERY_ATTEMPTS" ]; then
+    sleep "$RECOVERY_PAUSE_SECONDS"
+  fi
+done
+
+report_final

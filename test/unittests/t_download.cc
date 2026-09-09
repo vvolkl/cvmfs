@@ -6,6 +6,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <sys/time.h>
 
 #include "c_file_sandbox.h"
 #include "c_http_server.h"
@@ -16,6 +17,7 @@
 #include "network/download.h"
 #include "network/sink.h"
 #include "statistics.h"
+#include "util/algorithm.h"
 #include "util/file_guard.h"
 #include "util/posix.h"
 #include "util/prng.h"
@@ -100,6 +102,72 @@ class TestSink : public cvmfs::Sink {
 
   int fd;
   string path;
+};
+
+struct FetchThreadData {
+  FetchThreadData(DownloadManager *download_manager, JobInfo *download_job)
+      : download_manager(download_manager)
+      , download_job(download_job)
+      , result(kFailOther)
+      , elapsed_sec(0.0) { }
+
+  DownloadManager *download_manager;
+  JobInfo *download_job;
+  Failures result;
+  double elapsed_sec;
+};
+
+void *FetchJob(void *data) {
+  FetchThreadData *thread_data = static_cast<FetchThreadData *>(data);
+  struct timeval tv_start;
+  struct timeval tv_end;
+  int retval = gettimeofday(&tv_start, NULL);
+  assert(retval == 0);
+  thread_data->result =
+      thread_data->download_manager->Fetch(thread_data->download_job);
+  retval = gettimeofday(&tv_end, NULL);
+  assert(retval == 0);
+  thread_data->elapsed_sec = DiffTimeSeconds(tv_start, tv_end);
+  return NULL;
+}
+
+class MockEmptyReplyServer {
+ public:
+  explicit MockEmptyReplyServer(int port) {
+    atomic_init32(&num_processed_requests_);
+    server_ = new MockHTTPServer(port);
+    server_->SetResponseCallback(EmptyReplyHandler, this);
+    assert(server_->Start());
+  }
+
+  ~MockEmptyReplyServer() { delete server_; }
+
+  int num_processed_requests() {
+    return atomic_read32(&num_processed_requests_);
+  }
+
+  bool WaitForRequest(const unsigned timeout_ms) {
+    for (unsigned i = 0; i < timeout_ms; ++i) {
+      if (num_processed_requests() > 0) {
+        return true;
+      }
+      SafeSleepMs(1);
+    }
+    return false;
+  }
+
+ private:
+  static HTTPResponse EmptyReplyHandler(const HTTPRequest & /* req */,
+                                        void *data) {
+    MockEmptyReplyServer *server = static_cast<MockEmptyReplyServer *>(data);
+    atomic_inc32(&server->num_processed_requests_);
+    HTTPResponse response;
+    response.raw = true;
+    return response;
+  }
+
+  MockHTTPServer *server_;
+  atomic_int32 num_processed_requests_;
 };
 
 
@@ -215,6 +283,53 @@ TEST_F(T_Download, RemoteFile2Mem) {
   ASSERT_EQ(info.error_code(), kFailOk);
   ASSERT_EQ(memsink.pos(), src_content.length());
   EXPECT_STREQ(reinterpret_cast<char *>(memsink.data()), src_content.c_str());
+}
+
+TEST_F(T_Download, RetryBackoffDoesNotStallOtherDownloads) {
+  const unsigned kMaxRetries = 4;
+  const unsigned kBackoffMs = 100;
+
+  string src_path = GetSmallFile();
+  string src_content = GetFileContents(src_path);
+
+  MockFileServer file_server(8082, sandbox_path_);
+  MockEmptyReplyServer empty_reply_server(8085);
+
+  download_mgr.Spawn();
+  download_mgr.SetRetryParameters(kMaxRetries, kBackoffMs, kBackoffMs);
+
+  string failing_url = "http://127.0.0.1:8085/stalled";
+  string success_url = "http://127.0.0.1:8082/" + GetFileName(src_path);
+  cvmfs::MemSink failing_sink;
+  cvmfs::MemSink success_sink;
+  JobInfo failing_info(&failing_url, false /* compressed */,
+                       false /* probe hosts */, NULL, &failing_sink);
+  JobInfo success_info(&success_url, false /* compressed */,
+                       false /* probe hosts */, NULL, &success_sink);
+  FetchThreadData failing_thread(&download_mgr, &failing_info);
+  FetchThreadData success_thread(&download_mgr, &success_info);
+  pthread_t failing_handle;
+  pthread_t success_handle;
+
+  ASSERT_EQ(0, pthread_create(&failing_handle, NULL, FetchJob, &failing_thread));
+  ASSERT_TRUE(empty_reply_server.WaitForRequest(1000));
+  ASSERT_EQ(0, pthread_create(&success_handle, NULL, FetchJob, &success_thread));
+
+  ASSERT_EQ(0, pthread_join(success_handle, NULL));
+  ASSERT_EQ(0, pthread_join(failing_handle, NULL));
+
+  ASSERT_EQ(file_server.num_processed_requests(), 1);
+  ASSERT_GE(empty_reply_server.num_processed_requests(), 2);
+  ASSERT_EQ(success_thread.result, kFailOk);
+  ASSERT_EQ(success_info.error_code(), kFailOk);
+  ASSERT_EQ(success_sink.pos(), src_content.length());
+  EXPECT_STREQ(reinterpret_cast<char *>(success_sink.data()),
+               src_content.c_str());
+
+  ASSERT_NE(failing_thread.result, kFailOk);
+  EXPECT_GT(failing_info.num_retries(), 0);
+  EXPECT_GT(failing_thread.elapsed_sec, 0.05);
+  EXPECT_LT(success_thread.elapsed_sec + 0.05, failing_thread.elapsed_sec);
 }
 
 

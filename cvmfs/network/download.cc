@@ -61,6 +61,7 @@
 #include "util/concurrency.h"
 #include "util/exception.h"
 #include "util/logging.h"
+#include "util/platform.h"
 #include "util/posix.h"
 #include "util/prng.h"
 #include "util/smalloc.h"
@@ -69,6 +70,20 @@
 using namespace std;  // NOLINT
 
 namespace download {
+
+namespace {
+
+const uint64_t kNsPerMs = 1000ULL * 1000ULL;
+
+unsigned RemainingDelayMs(const uint64_t deadline_ns, const uint64_t now_ns) {
+  if ((deadline_ns == 0) || (deadline_ns <= now_ns)) {
+    return 0;
+  }
+  return static_cast<unsigned>((deadline_ns - now_ns + kNsPerMs - 1)
+                               / kNsPerMs);
+}
+
+}  // namespace
 
 /**
  * Returns the status if an interrupt happened for a given repository.
@@ -567,6 +582,7 @@ int DownloadManager::CallbackCurlSocket(CURL * /* easy */,
  */
 void *DownloadManager::MainDownload(void *data) {
   DownloadManager *download_mgr = static_cast<DownloadManager *>(data);
+  typedef multimap<uint64_t, pair<JobInfo *, CURL *> > PendingRetries;
   LogCvmfs(kLogDownload, kLogDebug,
            "download I/O thread of DownloadManager '%s' started",
            download_mgr->name_.c_str());
@@ -587,10 +603,22 @@ void *DownloadManager::MainDownload(void *data) {
   download_mgr->watch_fds_[kIdxPipeJobs].revents = 0;
   download_mgr->watch_fds_inuse_ = 2;
 
+  PendingRetries pending_retries;
   int still_running = 0;
   struct timeval timeval_start, timeval_stop;
   gettimeofday(&timeval_start, NULL);
   while (true) {
+    while (!pending_retries.empty()) {
+      PendingRetries::iterator i = pending_retries.begin();
+      if (i->first > platform_monotonic_time_ns()) {
+        break;
+      }
+      curl_multi_add_handle(download_mgr->curl_multi_, i->second.second);
+      pending_retries.erase(i);
+      curl_multi_socket_action(download_mgr->curl_multi_, CURL_SOCKET_TIMEOUT,
+                               0, &still_running);
+    }
+
     int timeout;
     if (still_running) {
       /* NOTE: The following might degrade the performance for many small files
@@ -603,12 +631,15 @@ void *DownloadManager::MainDownload(void *data) {
       timeout = 100;
       */
       timeout = 1;
-    } else {
+    } else if (pending_retries.empty()) {
       timeout = -1;
       gettimeofday(&timeval_stop, NULL);
       const int64_t delta = static_cast<int64_t>(
           1000 * DiffTimeSeconds(timeval_start, timeval_stop));
       perf::Xadd(download_mgr->counters_->sz_transfer_time, delta);
+    } else {
+      timeout = RemainingDelayMs(pending_retries.begin()->first,
+                                 platform_monotonic_time_ns());
     }
     const int retval = poll(download_mgr->watch_fds_,
                             download_mgr->watch_fds_inuse_, timeout);
@@ -631,7 +662,7 @@ void *DownloadManager::MainDownload(void *data) {
       download_mgr->watch_fds_[kIdxPipeJobs].revents = 0;
       JobInfo *info;
       download_mgr->pipe_jobs_->Read<JobInfo *>(&info);
-      if (!still_running) {
+      if (!still_running && pending_retries.empty()) {
         gettimeofday(&timeval_start, NULL);
       }
       CURL *handle = download_mgr->AcquireCurlHandle();
@@ -691,11 +722,17 @@ void *DownloadManager::MainDownload(void *data) {
 
         curl_multi_remove_handle(download_mgr->curl_multi_, easy_handle);
         if (download_mgr->VerifyAndFinalize(curl_error, info)) {
-          curl_multi_add_handle(download_mgr->curl_multi_, easy_handle);
-          curl_multi_socket_action(download_mgr->curl_multi_,
-                                   CURL_SOCKET_TIMEOUT,
-                                   0,
-                                   &still_running);
+          if (info->retry_timestamp_ns() > 0) {
+            pending_retries.insert(
+                make_pair(info->retry_timestamp_ns(),
+                          make_pair(info, easy_handle)));
+          } else {
+            curl_multi_add_handle(download_mgr->curl_multi_, easy_handle);
+            curl_multi_socket_action(download_mgr->curl_multi_,
+                                     CURL_SOCKET_TIMEOUT,
+                                     0,
+                                     &still_running);
+          }
         } else {
           // Return easy handle into pool and write result back
           download_mgr->ReleaseCurlHandle(easy_handle);
@@ -926,6 +963,7 @@ void DownloadManager::InitializeRequest(JobInfo *info, CURL *handle) {
   info->SetNumUsedHosts(1);
   info->SetNumRetries(0);
   info->SetBackoffMs(0);
+  info->SetRetryTimestampNs(0);
   info->SetHeaders(header_lists_->DuplicateList(default_headers_));
   if (info->info_header()) {
     header_lists_->AppendHeader(info->headers(), info->info_header());
@@ -1319,9 +1357,8 @@ bool DownloadManager::CanRetry(const JobInfo *info) {
 /**
  * Backoff for retry to introduce a jitter into a cluster of requesting
  * cvmfs nodes.
- * Retry only when HTTP caching is on.
- *
- * \return true if backoff has been performed, false otherwise
+ * Retry only when HTTP caching is on.  The actual wait happens outside the
+ * retry decision path.
  */
 void DownloadManager::Backoff(JobInfo *info) {
   unsigned backoff_init_ms = 0;
@@ -1346,7 +1383,9 @@ void DownloadManager::Backoff(JobInfo *info) {
   LogCvmfs(kLogDownload, kLogDebug,
            "(manager '%s' - id %" PRId64 ") backing off for %d ms",
            name_.c_str(), info->id(), info->backoff_ms());
-  SafeSleepMs(info->backoff_ms());
+  info->SetRetryTimestampNs(platform_monotonic_time_ns() +
+                            static_cast<uint64_t>(info->backoff_ms())
+                                * kNsPerMs);
 }
 
 void DownloadManager::SetNocache(JobInfo *info) {
@@ -1473,6 +1512,7 @@ bool DownloadManager::VerifyAndFinalize(const int curl_error, JobInfo *info) {
            "Verify downloaded url %s, proxy %s (curl error %d)",
            name_.c_str(), info->id(), info->url()->c_str(),
            info->proxy().c_str(), curl_error);
+  info->SetRetryTimestampNs(0);
   UpdateStatistics(info->curl_handle());
 
   bool was_metalink;
@@ -2060,6 +2100,7 @@ Failures DownloadManager::Fetch(JobInfo *info) {
     SetUrlOptions(info);
     // curl_easy_setopt(handle, CURLOPT_VERBOSE, 1);
     int retval;
+    bool try_again;
     do {
       retval = curl_easy_perform(handle);
       perf::Inc(counters_->n_requests);
@@ -2069,7 +2110,12 @@ Failures DownloadManager::Fetch(JobInfo *info) {
         perf::Xadd(counters_->sz_transfer_time,
                    static_cast<int64_t>(elapsed * 1000));
       }
-    } while (VerifyAndFinalize(retval, info));
+      try_again = VerifyAndFinalize(retval, info);
+      if (try_again && (info->retry_timestamp_ns() > 0)) {
+        SafeSleepMs(RemainingDelayMs(info->retry_timestamp_ns(),
+                                     platform_monotonic_time_ns()));
+      }
+    } while (try_again);
     result = info->error_code();
     ReleaseCurlHandle(info->curl_handle());
   }

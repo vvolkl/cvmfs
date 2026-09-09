@@ -1,0 +1,13 @@
+#!/bin/sh
+
+cvmfs_test_name="Issue #3563 proxy-kill reproducer"
+cvmfs_test_autofs_on_startup=false
+cvmfs_test_suites=""
+
+cvmfs_run_test() {
+  local this_script_dir="${TEST_ROOT}/src/109-proxy-kill-reproducer"
+  local exe="${this_script_dir}/run_test"
+
+  echo "Launching ${exe}"
+  exec bash "${exe}" --from-harness "$@"
+}

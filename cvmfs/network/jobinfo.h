@@ -107,6 +107,7 @@ class JobInfo {
   unsigned char num_used_hosts_;
   unsigned char num_retries_;
   unsigned backoff_ms_;
+  uint64_t retry_timestamp_ns_;
   int current_metalink_chain_index_;
   int current_host_chain_index_;
 
@@ -204,6 +205,7 @@ class JobInfo {
   unsigned char num_used_hosts() const { return num_used_hosts_; }
   unsigned char num_retries() const { return num_retries_; }
   unsigned backoff_ms() const { return backoff_ms_; }
+  uint64_t retry_timestamp_ns() const { return retry_timestamp_ns_; }
   int current_metalink_chain_index() const {
     return current_metalink_chain_index_;
   }
@@ -269,6 +271,9 @@ class JobInfo {
   }
   void SetNumRetries(unsigned char num_retries) { num_retries_ = num_retries; }
   void SetBackoffMs(unsigned backoff_ms) { backoff_ms_ = backoff_ms; }
+  void SetRetryTimestampNs(uint64_t retry_timestamp_ns) {
+    retry_timestamp_ns_ = retry_timestamp_ns;
+  }
   void SetCurrentMetalinkChainIndex(int current_metalink_chain_index) {
     current_metalink_chain_index_ = current_metalink_chain_index;
   }
