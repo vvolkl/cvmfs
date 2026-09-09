@@ -1612,9 +1612,10 @@ cvmfs_probe() {
         cvmfs_readconfig $fqrn || die "Failed to read CernVM-FS configuration"
         echo -n "Probing $CVMFS_MOUNT_DIR/$fqrn... "
         ls "$CVMFS_MOUNT_DIR/$fqrn" > /dev/null 2>&1  # workaround for FC28+
-        if [ "$sys_arch" = "Darwin" ] && ! is_macfuse_enabled; then
+        if [ "$sys_arch" = "Darwin" ] && { ! is_macfuse_enabled || is_macfuse_fskit; }; then
+          # FUSE-T and FSKit mounts do not carry the cvmfs2 fsname
           df -P "$CVMFS_MOUNT_DIR/$fqrn" 2>&1 | grep -q "$fqrn"
-        else 
+        else
           df -P "$CVMFS_MOUNT_DIR/$fqrn" 2>&1 | grep -q ^cvmfs2
         fi
         if [ $? -ne 0 ]; then
@@ -1986,6 +1987,17 @@ list_mounts() {
   # /usr/local/bin/cvmfs2) on Linux or lines that contain fuse-t on macOS
   if [ x"$sys_arch" = x"Darwin" ] && ! is_macfuse_enabled; then
     mount -t "nfs" | grep "fuse-t"
+  elif [ x"$sys_arch" = x"Darwin" ] && is_macfuse_fskit; then
+    # FSKit ignores fsname; mounts show up as
+    # "/dev/diskN on /Volumes/cvmfs/<fqrn> (macfuse, ..., fskit)".
+    # Report them under CVMFS_MOUNT_DIR (a symlink to the real directory),
+    # which is what callers compare mount points against.
+    local mount_dir="${CVMFS_MOUNT_DIR:-/cvmfs}"
+    local mount_root
+    mount_root=$(readlink "$mount_dir" 2>/dev/null)
+    [ -n "$mount_root" ] || mount_root="$mount_dir"
+    mount | grep "(macfuse,.*fskit" | grep " on ${mount_root}/" \
+      | sed "s| on ${mount_root}/| on ${mount_dir}/|"
   else
     mount -t $fuse_fs_type | grep "^\(/[^[:space:]]*/\)\?cvmfs2[[:space:]]"
   fi
@@ -2089,7 +2101,9 @@ add_cvmfs_user() {
         sudo dscl . -create /Users/cvmfs UniqueID $uid
         sudo dscl . -create /Users/cvmfs PrimaryGroupID $gid
         sudo dscl . -create /Users/cvmfs NFSHomeDirectory "/var/lib/cvmfs"
-        sudo dscl . -passwd /Users/cvmfs "*"
+        # Setting the attribute directly bypasses the password policy, which
+        # rejects "*" when it goes through -passwd
+        sudo dscl . -create /Users/cvmfs Password "*"
 
         #Hide user from login screen
         sudo defaults write /Library/Preferences/com.apple.loginwindow HiddenUsersList -array-add cvmfs
