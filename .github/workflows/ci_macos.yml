@@ -39,11 +39,28 @@ jobs:
           # The FSKit module is an app extension that has to be enabled
           # before it can be used (System Settings > File System Extensions)
           MACFUSE_APP=/Library/Filesystems/macfuse.fs/Contents/Resources/macfuse.app
+          /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R ${MACFUSE_APP} || true
           for m in macfuse macfuse-local; do
             pluginkit -a ${MACFUSE_APP}/Contents/Extensions/io.macfuse.app.fsmodule.${m}.appex || true
-            pluginkit -e use -i io.macfuse.app.fsmodule.${m} || true
+            pluginkit -e use -p com.apple.fskit.fsmodule -i io.macfuse.app.fsmodule.${m} || true
           done
-          pluginkit -m -v -p com.apple.fskit.fsmodule || true
+          # fskit_agent caches the module list per user session
+          pkill -x fskit_agent || true
+          pluginkit -m -Dvv -p com.apple.fskit.fsmodule || true
+          # Ask FSKit itself which modules it considers enabled; this is the
+          # flag the macFUSE daemon checks before mounting
+          cat > /tmp/fskit_modules.swift <<'EOS'
+          import FSKit
+          import Foundation
+          let sem = DispatchSemaphore(value: 0)
+          FSClient.shared.fetchInstalledExtensions { list, err in
+            if let err = err { print("fetchInstalledExtensions error: \(err)") }
+            for m in list ?? [] { print("\(m.bundleIdentifier) enabled=\(m.isEnabled) url=\(m.url.path)") }
+            sem.signal()
+          }
+          sem.wait()
+          EOS
+          swiftc -target arm64-apple-macos15.4 -o /tmp/fskit_modules /tmp/fskit_modules.swift && /tmp/fskit_modules || true
           ls -la /usr/local/lib/libfuse* /usr/local/include/fuse3
 
       - name: Build CVMFS
@@ -91,6 +108,7 @@ jobs:
           sudo launchctl print system 2>/dev/null | grep -i macfuse || echo "no macfuse launchd services in system domain"
           launchctl print gui/$(id -u) 2>/dev/null | grep -i "macfuse\|fskit" || echo "no macfuse launchd services in gui domain"
           pluginkit -m -v -p com.apple.fskit.fsmodule
+          /tmp/fskit_modules || true
           # FSKit mounts are unprivileged.  Run cvmfs2 directly and in the
           # foreground with libfuse debug output so that mount problems are
           # visible; mount_cvmfs would send them to /dev/null.

@@ -2378,9 +2378,8 @@ activate_service() {
       fi
     ;;
     Darwin )
-      if [ "$svc" = "autofs" ]; then
-        automount -vc 2>/dev/null || true
-      fi
+      # Not supported at this point
+      :
     ;;
     * )
       echo "Architecture $sys_arch is not supported"
@@ -2417,9 +2416,8 @@ reload_service() {
       fi
     ;;
     Darwin )
-      if [ "$svc" = "autofs" ]; then
-        automount -vc 2>/dev/null || true
-      fi
+      # Not supported at this point
+      :
     ;;
     * )
       echo "Architecture $sys_arch is not supported"
@@ -2537,16 +2535,6 @@ EOF
         mkdir -p /cvmfs
         chown cvmfs:cvmfs /cvmfs
         chmod 777 /cvmfs
-     fi
-
-     # Configure autofs on macOS
-     local AUTOMASTER=/etc/auto_master
-     if [ -f $AUTOMASTER ]; then
-       local cvmfs_map="${CVMFS_MOUNT_DIR} auto_cvmfs nobrowse,hidefromfinder"
-       if ! grep -q "^${CVMFS_MOUNT_DIR}[[:space:]].*auto_cvmfs" $AUTOMASTER 2>/dev/null; then
-         echo "$cvmfs_map" >> $AUTOMASTER
-         automount -vc 2>/dev/null || true
-       fi
      fi
 
      ;;
