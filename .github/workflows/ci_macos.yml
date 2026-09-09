@@ -44,6 +44,19 @@ jobs:
             pluginkit -a ${MACFUSE_APP}/Contents/Extensions/io.macfuse.app.fsmodule.${m}.appex || true
             pluginkit -e use -p com.apple.fskit.fsmodule -i io.macfuse.app.fsmodule.${m} || true
           done
+          # The CI shell is not in the console user's GUI session, but
+          # fskitd asks the fskit_agent of that session (and its pkd) whether
+          # a module is enabled.  Repeat the registration inside the GUI
+          # session's bootstrap namespace.
+          echo "managername: $(launchctl managername)"; pgrep -l -x loginwindow || echo "no loginwindow"
+          LW=$(pgrep -x -u $(id -u) loginwindow | head -1)
+          if [ -n "$LW" ]; then
+            for m in macfuse macfuse-local; do
+              sudo launchctl bsexec $LW sudo -u $(id -un) pluginkit -a ${MACFUSE_APP}/Contents/Extensions/io.macfuse.app.fsmodule.${m}.appex || true
+              sudo launchctl bsexec $LW sudo -u $(id -un) pluginkit -e use -p com.apple.fskit.fsmodule -i io.macfuse.app.fsmodule.${m} || true
+            done
+            sudo launchctl bsexec $LW sudo -u $(id -un) pluginkit -m -v -p com.apple.fskit.fsmodule || true
+          fi
           # fskit_agent caches the module list per user session
           pkill -x fskit_agent || true
           pluginkit -m -Dvv -p com.apple.fskit.fsmodule || true
@@ -61,6 +74,10 @@ jobs:
           sem.wait()
           EOS
           swiftc -target arm64-apple-macos15.4 -o /tmp/fskit_modules /tmp/fskit_modules.swift && /tmp/fskit_modules || true
+          if [ -n "$LW" ]; then
+            echo "--- FSKit view from the GUI session"
+            sudo launchctl bsexec $LW sudo -u $(id -un) /tmp/fskit_modules || true
+          fi
           ls -la /usr/local/lib/libfuse* /usr/local/include/fuse3
 
       - name: Build CVMFS
