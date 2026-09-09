@@ -825,7 +825,15 @@ int main(int argc, char **argv) {
     if (!mount_appeared) {
       LogCvmfs(kLogCvmfs, kLogStderr,
                "Timeout waiting for FSKit mount on %s", mountpoint.c_str());
+      // cvmfs2 may ignore SIGTERM while it waits for the FSKit mount, so
+      // never block indefinitely on it
       kill(pid, SIGTERM);
+      for (int i = 0; i < 50; ++i) {
+        if (waitpid(pid, NULL, WNOHANG) == pid)
+          return 32;
+        usleep(kPollIntervalUs);
+      }
+      kill(pid, SIGKILL);
       waitpid(pid, NULL, 0);
       return 32;
     }

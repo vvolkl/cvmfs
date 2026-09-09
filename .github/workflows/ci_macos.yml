@@ -22,7 +22,7 @@ jobs:
           csrutil status
           sw_vers
           brew install coreutils
-          sudo ln -s /usr/local/bin/gtimeout /usr/local/bin/timeout
+          sudo ln -s /opt/homebrew/bin/gtimeout /usr/local/bin/timeout
           sudo ln -s /opt/homebrew/bin/greadlink /usr/local/bin/greadlink
           sudo mkdir -p /usr/local/include
 
@@ -86,19 +86,36 @@ jobs:
         run: |
           sudo sh -c 'echo "CVMFS_HTTP_PROXY=DIRECT" > /etc/cvmfs/default.local'
           sudo sh -c 'echo "CVMFS_DEBUGLOG=/tmp/cvmfs-smoke-debug.log" >> /etc/cvmfs/default.local'
-          sudo cvmfs_config showconfig cvmfs-config.cern.ch \
+          cvmfs_config showconfig cvmfs-config.cern.ch \
             | grep -E "^CVMFS_(USER|CACHE_BASE|RELOAD_SOCKETS|USE_MACFUSE_FSKIT|MOUNT_DIR)="
-          # FSKit mounts are unprivileged
-          mkdir -p /cvmfs/cvmfs-config.cern.ch
-          mount_cvmfs cvmfs-config.cern.ch /cvmfs/cvmfs-config.cern.ch; echo "mount rc=$?"
-          sleep 3
-          mount | grep -i "fskit\|cvmfs" || true
-          ls -la /cvmfs/cvmfs-config.cern.ch || true
-          sudo cvmfs_config status || true
-          sudo cvmfs_config probe || true
-          sudo cvmfs_config umount || true
-          sudo tail -80 /tmp/cvmfs-smoke-debug.log || true
-          ls -la ~/Library/Caches/cvmfs ~/Library/Caches/cvmfs/run || true
+          sudo launchctl print system 2>/dev/null | grep -i macfuse || echo "no macfuse launchd services in system domain"
+          launchctl print gui/$(id -u) 2>/dev/null | grep -i "macfuse\|fskit" || echo "no macfuse launchd services in gui domain"
+          pluginkit -m -v -p com.apple.fskit.fsmodule
+          # FSKit mounts are unprivileged.  Run cvmfs2 directly and in the
+          # foreground with libfuse debug output so that mount problems are
+          # visible; mount_cvmfs would send them to /dev/null.
+          mkdir -p /cvmfs/cvmfs-config.cern.ch ~/Library/Caches/cvmfs/run
+          CONF=/etc/cvmfs/default.conf:/etc/cvmfs/default.d/10-osx.conf:/etc/cvmfs/default.d/11-osx-fskit.conf:/etc/cvmfs/default.d/50-cern.conf:/etc/cvmfs/domain.d/cern.ch.conf:/etc/cvmfs/default.local
+          timeout 45 cvmfs2 -d -o obackend=fskit,noappledouble,foreground,disable_watchdog,fsname=cvmfs2,uid=$(id -u),gid=$(id -g),config=$CONF \
+            cvmfs-config.cern.ch /cvmfs/cvmfs-config.cern.ch > /tmp/cvmfs-smoke-cvmfs2.log 2>&1 &
+          CVMFS2_PID=$!
+          for i in $(seq 1 30); do
+            sleep 1
+            if mount | grep -q "/Volumes/cvmfs/cvmfs-config.cern.ch"; then break; fi
+          done
+          mount | grep -i "fskit\|cvmfs" || echo "no FSKit mount present"
+          timeout 10 ls -la /cvmfs/cvmfs-config.cern.ch || echo "ls failed or hung"
+          timeout 10 cvmfs_config probe || true
+          timeout 10 sudo cvmfs_config umount || true
+          kill $CVMFS2_PID 2>/dev/null || true
+          sleep 2
+          kill -9 $CVMFS2_PID 2>/dev/null || true
+          echo "--- cvmfs2 -d output"; tail -80 /tmp/cvmfs-smoke-cvmfs2.log || true
+          echo "--- cvmfs debug log"; tail -40 /tmp/cvmfs-smoke-debug.log || true
+          echo "--- macfuse/fskit unified log"
+          sudo log show --last 3m --style compact \
+            --predicate 'process CONTAINS "macfuse" OR process CONTAINS "fskit" OR process CONTAINS "pkd" OR subsystem CONTAINS "macfuse" OR subsystem CONTAINS "FSKit" OR process == "cvmfs2"' \
+            | grep -v "^Filtering\|^Timestamp" | tail -120 || true
           sudo rm -f /etc/cvmfs/default.local
 
       - name: Run Tests
@@ -192,4 +209,5 @@ jobs:
               /tmp/cvmfs-mounts.txt
               /tmp/cvmfs-unified.log
               /tmp/cvmfs-smoke-debug.log
+              /tmp/cvmfs-smoke-cvmfs2.log
               /tmp/cvmfs-debug.log
