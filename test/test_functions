@@ -45,7 +45,7 @@ if [ ! -z "$CVMFS_TEST_GEO_ACCOUNT_ID" ]; then
   echo "CVMFS_GEO_ACCOUNT_ID=$CVMFS_TEST_GEO_ACCOUNT_ID" | sudo tee -a /etc/cvmfs/server.local > /dev/null
 fi
 
-if ! [[ -v CVMFS_TEST_DOCKER ]]; then
+if [ -z "${CVMFS_TEST_DOCKER+x}" ]; then
   if [ -f /.dockerinit ]; then
     CVMFS_TEST_DOCKER=yes
   else
@@ -543,7 +543,7 @@ cvmfs_mount() {
     sudo sh -c "echo 'CVMFS_DEBUGLOG=${CVMFS_TEST_DEBUGLOG}' >> /etc/cvmfs/default.local" || return 100
   fi
 
-  if [[ -v CVMFS_TEST_QUOTED_PARAM_KEY_VAL ]]; then
+  if [ -n "${CVMFS_TEST_QUOTED_PARAM_KEY_VAL+x}" ]; then
     sudo sh -c "echo '${CVMFS_TEST_QUOTED_PARAM_KEY_VAL}' >> /etc/cvmfs/default.local" || return 100
   fi
 

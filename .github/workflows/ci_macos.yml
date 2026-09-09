@@ -56,6 +56,19 @@ jobs:
           export CPATH=$CPATH:/usr/local/include
           ./ci/build_package.sh ${GITHUB_WORKSPACE} ${GITHUB_WORKSPACE}/build cvmfs
 
+      - name: Setup firmlinks
+        run: |
+          # / is readonly on macos 11+; synthetic.conf entries only take
+          # effect for paths that do not exist yet, so /cvmfs must point to
+          # the FSKit mount directory before the package's postinstall runs
+          sudo mkdir -p /Volumes/cvmfs
+          sudo zsh -c 'echo -e "cvmfs\tVolumes/cvmfs\n#comment\n" > /etc/synthetic.conf'
+          sudo chown root:wheel /etc/synthetic.conf
+          sudo chmod a+r /etc/synthetic.conf
+          # apfs.util seems to return non-zero error codes also on success
+          sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t || true
+          ls -la /cvmfs
+
       - name: Install CVMFS
         run: |
           export CVMFS_PACKAGE=$(ls ${GITHUB_WORKSPACE}/build/pkg_result/cvmfs-*.pkg)
@@ -63,8 +76,7 @@ jobs:
 
       - name: Setup CVMFS
         run: |
-          # / is readonly on macos 11+ - cvmfs_config setup creates the
-          # synthetic firmlink /cvmfs -> /Volumes/cvmfs used by FSKit mounts
+          cat /tmp/cvmfs_postinstall || true
           sudo env CVMFS_USE_MACFUSE_FSKIT=yes cvmfs_config setup
           sudo env CVMFS_USE_MACFUSE_FSKIT=yes cvmfs_config chksetup || exit 1
           ls -la /cvmfs /Volumes/cvmfs
@@ -146,3 +158,4 @@ jobs:
           path: |
               /tmp/cvmfs-client-test.log
               /tmp/cvmfs-client-test.xunit.xml
+              /tmp/cvmfs_postinstall
