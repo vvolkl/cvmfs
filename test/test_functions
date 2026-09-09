@@ -470,6 +470,9 @@ cvmfs_clean() {
   pidwait openwaitprint || true
   sudo env CVMFS_USE_MACFUSE_KEXT="$CVMFS_TEST_USE_MACFUSE_KEXT" CVMFS_USE_MACFUSE_FSKIT="$CVMFS_TEST_USE_MACFUSE_FSKIT" cvmfs_config umount > /dev/null  || return 100
   sudo sh -c "rm -rf /var/lib/cvmfs/*"                  || return 101
+  if [ x"$CVMFS_TEST_USE_MACFUSE_FSKIT" = x"yes" ]; then
+    rm -rf "$HOME/Library/Caches/cvmfs"                  || return 101
+  fi
   sudo rm -f /etc/cvmfs/default.local                    || return 102
   sudo sh -c "rm -f /etc/cvmfs/config.d/*.local"         || return 104
   sudo sh -c "cat /dev/null > $CVMFS_TEST_SYSLOG_TARGET" || return 105
@@ -561,12 +564,22 @@ cvmfs_mount() {
 }
 
 
+# FSKit mounts are unprivileged and have to be created by the test user
+_cvmfs_mount_cmd() {
+  local repository=$1
+  if [ x"$CVMFS_TEST_USE_MACFUSE_FSKIT" = x"yes" ]; then
+    mount_cvmfs "$repository" "/cvmfs/$repository"
+  else
+    sudo mount -t cvmfs "$repository" "/cvmfs/$repository"
+  fi
+}
+
 _cvmfs_mount_manually() {
   local repository=$1
   cvmfs_config status | grep -q "/cvmfs/$repository" && return 0
   mkdir -p "/cvmfs/$repository" 2>/dev/null || sudo mkdir -p "/cvmfs/$repository"
-  sudo mount -t cvmfs "$repository" "/cvmfs/$repository" >/dev/null 2>&1
-  if running_on_osx; then 
+  _cvmfs_mount_cmd "$repository" >/dev/null 2>&1
+  if running_on_osx; then
     sleep 3
   fi
 }
@@ -2514,7 +2527,8 @@ try_automount() {
     if mount | grep "$repo"; then
       retval=0
     else
-      sudo mount -t cvmfs $repo /cvmfs/$repo >/dev/null 2>&1
+      mkdir -p "/cvmfs/$repo" 2>/dev/null || sudo mkdir -p "/cvmfs/$repo"
+      _cvmfs_mount_cmd "$repo" >/dev/null 2>&1
       retval=$?
     fi
     sleep 3

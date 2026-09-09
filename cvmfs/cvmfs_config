@@ -606,7 +606,7 @@ cvmfs_chksetup() {
   fi
 
   # Check that /dev/fuse is read/writable from cvmfs user
-  if [ x"$sys_arch" = x"Darwin" ] && [ ! is_macfuse_enabled ]; then
+  if [ x"$sys_arch" = x"Darwin" ] && ! is_macfuse_enabled; then
     if ! check_fuse_t_installation; then
       echo "Error: FUSE-T is not installed."
       num_errors=$(($num_errors+1))
@@ -2286,9 +2286,9 @@ check_dev_fuse() {
       charDevice=/dev/fuse ;;
 
     Darwin )
-      if ! is_macfuse_enabled; then
-      # Since we rely on user-space FUSE-T now the check for /dev/<device_name> isn't necessary
-        exit 0
+      # FUSE-T and the FSKit backend do not use a character device
+      if ! is_macfuse_enabled || is_macfuse_fskit; then
+        return 0
       fi
       charDevice=/dev/macfuse ;;
     * )
@@ -2487,8 +2487,10 @@ EOF
      # point is `/Volumes/cvmfs` instead, so the firmlink target changes.
      if compare_versions $(sw_vers -productVersion) -ge "10.15"; then
         if is_macfuse_fskit; then
-          # FSKit mounts appear under /Volumes
+          # FSKit mounts appear under /Volumes and are created by
+          # unprivileged users, who need to create their mount points
           mkdir -p /Volumes/cvmfs
+          chmod 777 /Volumes/cvmfs
           local firmlink_target=/Volumes/cvmfs
           # Compatibility symlink: repos may contain absolute symlinks
           # pointing to /Users/Shared/cvmfs/...  A previous non-FSKit setup
