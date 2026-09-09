@@ -2210,7 +2210,11 @@ check_fuse_t_installation() {
   return 0
 }
 
+# True for both macFUSE backends (kext and FSKit); false means FUSE-T
 is_macfuse_enabled() {
+  if is_macfuse_fskit; then
+    return 0
+  fi
   if [ x"$CVMFS_USE_MACFUSE_KEXT" = x ]; then
     return 1
   fi
