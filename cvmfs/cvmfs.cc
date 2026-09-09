@@ -1138,6 +1138,24 @@ static void cvmfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
   if (iter_handle != directory_handles_->end()) {
     listing = iter_handle->second;
 
+    // Cut the reply at a directory entry boundary.  The Linux kernel drops a
+    // truncated trailing entry and re-requests it, but the macFUSE FSKit
+    // module does not cope with partial entries.
+    if ((off >= 0) && (static_cast<size_t>(off) < listing.size)) {
+      const char *cursor = listing.buffer + off;
+      size_t whole_entries = 0;
+      while (whole_entries < listing.size - off) {
+        uint32_t namelen;
+        memcpy(&namelen, cursor + whole_entries + 16, sizeof(namelen));
+        const size_t entry_size = (24 + namelen + 7) & ~static_cast<size_t>(7);
+        if (whole_entries + entry_size > size)
+          break;
+        whole_entries += entry_size;
+      }
+      if (whole_entries > 0)
+        size = whole_entries;
+    }
+
     ReplyBufferSlice(req, listing.buffer, listing.size, off, size);
     return;
   }
