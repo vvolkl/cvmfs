@@ -615,6 +615,10 @@ cvmfs_chksetup() {
     if [ ! -d /Library/Filesystems/macfuse.fs ]; then
       echo "Error: macFUSE is missing."
       num_errors=$(($num_errors+1))
+    elif is_macfuse_fskit; then
+      check_macfuse_fskit
+      exit_code=$?
+      num_errors=$(($num_errors+$exit_code))
     fi
   fi
   check_dev_fuse
@@ -2224,6 +2228,39 @@ is_macfuse_fskit() {
       echo "Valid values are: yes, on, 1, true, no, off, 0, false"
       return 1 ;;
   esac
+}
+
+# The FSKit backend needs macFUSE >= 5.4.0 (earlier releases fail to mount)
+# and its file system extension must have been enabled by the user.
+check_macfuse_fskit() {
+  local macfuse_min_version=5.4.0
+  local macfuse_app=/Library/Filesystems/macfuse.fs/Contents/Resources/macfuse.app
+  local plist=/Library/Filesystems/macfuse.fs/Contents/version.plist
+  local version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' $plist 2>/dev/null)
+  if [ x"$version" = x ]; then
+    echo "Error: cannot determine macFUSE version from $plist"
+    return 1
+  fi
+  if ! compare_versions "$version" -ge "$macfuse_min_version"; then
+    echo "Error: macFUSE $version is installed but the FSKit backend requires >= $macfuse_min_version"
+    return 1
+  fi
+  local appex
+  for appex in $macfuse_app/Contents/Extensions/io.macfuse.app.fsmodule.macfuse.appex \
+               $macfuse_app/Contents/Extensions/io.macfuse.app.fsmodule.macfuse-local.appex
+  do
+    if [ ! -d "$appex" ]; then
+      echo "Error: macFUSE FSKit module $appex is missing"
+      return 1
+    fi
+  done
+  # pluginkit only sees extensions of the console user's session, so this
+  # is a warning rather than an error
+  if ! pluginkit -m -i io.macfuse.app.fsmodule.macfuse 2>/dev/null | grep -q '^+'; then
+    echo "Warning: the macFUSE file system extension does not appear to be enabled"
+    echo "         (System Settings > General > Login Items & Extensions > File System Extensions)"
+  fi
+  return 0
 }
 
 check_dev_fuse() {
