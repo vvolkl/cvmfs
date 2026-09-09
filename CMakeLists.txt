@@ -546,9 +546,12 @@ endif ()
 #
 if (BUILD_UNITTESTS OR BUILD_UNITTESTS_DEBUG)
   add_compile_definitions(_CVMFS_UNITTESTS_ENABLED)
+endif ()
+
+if (BUILD_UNITTESTS OR BUILD_UNITTESTS_DEBUG OR BUILD_INTEGRATION_TESTS)
   enable_testing ()
   add_custom_target (check ${CMAKE_CTEST_COMMAND} -VV)
-  add_subdirectory (test/unittests)
+  add_subdirectory (test)
 endif ()
 
 if (BUILD_UBENCHMARKS)

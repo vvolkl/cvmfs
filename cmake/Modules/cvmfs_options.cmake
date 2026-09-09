@@ -20,6 +20,7 @@ option (BUILD_PRELOADER         "Build the alien cache pre-loader"              
 option (BUILD_SERVER_DEBUG      "Build writer's end programs with debug symbols and debug outputs" OFF)
 option (BUILD_UNITTESTS         "Build the CernVM-FS unit test set"                                OFF)
 option (BUILD_UNITTESTS_DEBUG   "Build the CernVM-FS unit test set with verbose output and -g"     OFF)
+option (BUILD_INTEGRATION_TESTS "Register the CernVM-FS integration tests with CTest"              OFF)
 option (BUILD_UBENCHMARKS       "Build the CernVM-FS micro benchmarks"                             OFF)
 option (BUILD_QC_TESTS          "Build the QuickCheck property random tests"                       OFF)
 option (BUILD_STRESS_TESTS      "Build the stress tests"                                           OFF)
