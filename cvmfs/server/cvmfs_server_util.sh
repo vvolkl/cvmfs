@@ -989,6 +989,22 @@ is_systemd() {
 }
 
 
+# start/stop the cvmfs-gateway service with whatever service manager is present
+request_gateway_service() {
+  local request_verb="$1"
+  if is_systemd; then
+    sudo systemctl $request_verb cvmfs-gateway
+  elif [ x"$SUPERVISOR_BIN" != x"false" ]; then
+    sudo $SUPERVISOR_BIN $request_verb cvmfs-gateway
+  elif [ x"$SERVICE_BIN" != x"false" ]; then
+    sudo $SERVICE_BIN cvmfs-gateway $request_verb
+  else
+    echo "Warning: no service manager found, cannot $request_verb cvmfs-gateway" >&2
+    return 1
+  fi
+}
+
+
 # this strips both the attached signature block and the certificate hash from
 # an already signed manifest file and prints the result to stdout
 strip_manifest_signature() {

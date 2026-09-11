@@ -135,11 +135,7 @@ cvmfs_server_gc() {
     # If cvmfs-gateway is running, turn it off for the duration of the GC
     if [ "x$(sudo /usr/libexec/cvmfs-gateway/scripts/run_cvmfs_gateway.sh status)" = "xpong" ]; then
       echo "Turning off cvmfs-gateway"
-      if is_systemd; then
-        sudo systemctl stop cvmfs-gateway
-      else
-        sudo service cvmfs-gateway stop
-      fi
+      request_gateway_service stop
       trap __restore_cvmfs_gateway EXIT HUP INT TERM
     fi
   fi
@@ -245,11 +241,7 @@ cvmfs_server_gc() {
 
 __restore_cvmfs_gateway() {
   echo "Restoring cvmfs-gateway"
-  if is_systemd; then
-    sudo systemctl start cvmfs-gateway
-  else
-    sudo service cvmfs-gateway start
-  fi
+  request_gateway_service start
 }
 
 # return true (0) if the upstream repo was garbage collected more recently
