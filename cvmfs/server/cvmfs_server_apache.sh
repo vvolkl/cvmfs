@@ -9,16 +9,29 @@
 # - cvmfs_server_util.sh
 
 
+# Apache managed outside of this host (CVMFS_SERVER_APACHE_EXTERNAL=true)
+is_external_apache() {
+  [ x"$CVMFS_SERVER_APACHE_EXTERNAL" = x"true" ]
+}
+
+
 # checks if apache is installed and running
 #
 # @return  0 if apache is installed and running
 check_apache() {
+  if is_external_apache; then
+    return 0
+  fi
   [ -d /etc/${APACHE_CONF} ] && request_apache_service status > /dev/null
 }
 
 
 request_apache_service() {
   local request_verb="$1"
+  if is_external_apache; then
+    echo "Warning: Apache is external, skipping '$request_verb' (a manual reload may be needed)" >&2
+    return 0
+  fi
   if is_systemd; then
     /bin/systemctl $request_verb ${APACHE_CONF}
   elif [ x"$SUPERVISOR_BIN" != x"false" ]; then
@@ -37,7 +50,7 @@ reload_apache() {
   local verb=reload
   if [ "x$CVMFS_SERVER_APACHE_RELOAD_IS_RESTART" = "xtrue" ]; then
     # The reset-failed verb is only available with systemd
-    if is_systemd; then
+    if is_systemd && ! is_external_apache; then
       request_apache_service reset-failed > /dev/null 2>&1
     fi
     verb=restart
@@ -91,6 +104,10 @@ check_url() {
 
 check_apache_module() {
   local module_name="$1"
+  if is_external_apache; then
+    echo "Warning: Apache is external, cannot verify that $module_name is enabled" >&2
+    return 0
+  fi
   ${APACHE_CTL} -M 2>&1 | grep -q "$module_name"
 }
 
@@ -157,6 +174,7 @@ restart_apache() {
 # an ubuntu machine. This enables these modules on an ubuntu installation
 # Note: this function requires a privileged user
 ensure_enabled_apache_modules() {
+  is_external_apache && return 0
   local a2enmod_bin=
   local apache2ctl_bin=
   a2enmod_bin="$(find_sbin    a2enmod)"    || return 0

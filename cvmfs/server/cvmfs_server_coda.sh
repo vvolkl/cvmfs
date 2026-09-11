@@ -119,7 +119,8 @@ if [ ! -d /run/systemd/system ]; then
     SERVICE_BIN="/usr/sbin/service" # Ubuntu
   elif cvmfs_sys_file_is_executable /sbin/rc-service ; then
     SERVICE_BIN="/sbin/rc-service" # OpenRC
-  elif [ x"$SUPERVISOR_BIN" = x"false" ]; then
+  elif [ x"$SUPERVISOR_BIN" = x"false" ] && \
+       [ x"$CVMFS_SERVER_APACHE_EXTERNAL" != x"true" ]; then
     die "Neither systemd nor service binary detected"
   fi
 fi
@@ -150,6 +151,13 @@ CVMFS_SERVER_PUBLISH_DEBUG=$CVMFS_SERVER_PUBLISH
 # On newer Apache version, reloading is asynchonrous and not guaranteed to succeed.
 # The integration test cases set this parameter to true.
 CVMFS_SERVER_APACHE_RELOAD_IS_RESTART=${CVMFS_SERVER_APACHE_RELOAD_IS_RESTART:=false}
+
+# Set to true if Apache runs outside the control of this host (e.g. in a
+# separate container sharing /srv/cvmfs).  cvmfs_server then neither checks
+# nor reloads the local Apache service; the Apache configuration under
+# /etc/httpd (resp. /etc/apache2) is still written and must be picked up
+# by the external server.
+CVMFS_SERVER_APACHE_EXTERNAL=${CVMFS_SERVER_APACHE_EXTERNAL:=false}
 
 ################################################################################
 #                                                                              #
