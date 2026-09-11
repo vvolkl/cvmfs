@@ -101,10 +101,17 @@ static void Remount(const string &path, const RemountType how) {
   ExecAsRoot("/bin/mount", "-o", remount_option.c_str(), "dev", path.c_str());
 }
 
-static void Mount(const string &path) {
+// Systemd owns fstab mounts only when it is the running init.  Containers
+// built from systemd-based images ship /bin/systemctl without a running
+// systemd, so test for the runtime directory (same semantics as sd_booted()).
+static bool SystemdIsBooted() {
   platform_stat64 info;
-  const int retval = platform_stat("/bin/systemctl", &info);
-  if (retval == 0) {
+  return (platform_stat("/run/systemd/system", &info) == 0)
+         && S_ISDIR(info.st_mode);
+}
+
+static void Mount(const string &path) {
+  if (SystemdIsBooted()) {
     string systemd_unit = cvmfs_suid::EscapeSystemdUnit(path);
     // On newer versions of systemd, the mount unit is based on the fully
     // resolved path (discovered on Ubuntu 18.04, test 539)

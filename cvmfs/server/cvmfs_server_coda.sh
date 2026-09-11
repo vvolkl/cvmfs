@@ -110,14 +110,16 @@ if [ -f /bin/supervisorctl ]; then
   SUPERVISOR_BIN=/bin/supervisorctl
 fi
 SERVICE_BIN="false"
-if [ ! -f /bin/systemctl ]; then
+# /bin/systemctl also exists in containers built from systemd-based images
+# where systemd is not the running init, so check for a booted systemd instead
+if [ ! -d /run/systemd/system ]; then
   if cvmfs_sys_file_is_executable /sbin/service ; then
     SERVICE_BIN="/sbin/service"
   elif cvmfs_sys_file_is_executable /usr/sbin/service ; then
     SERVICE_BIN="/usr/sbin/service" # Ubuntu
   elif cvmfs_sys_file_is_executable /sbin/rc-service ; then
     SERVICE_BIN="/sbin/rc-service" # OpenRC
-  else
+  elif [ x"$SUPERVISOR_BIN" = x"false" ]; then
     die "Neither systemd nor service binary detected"
   fi
 fi

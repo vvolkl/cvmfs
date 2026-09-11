@@ -984,7 +984,8 @@ minpidof() {
 # the service command is only looked for if systemctl is missing, but
 # the supervisorctl command will take precedence over systemctl.
 is_systemd() {
-  [ x"$SERVICE_BIN" = x"false" ] && [ x"$SUPERVISOR_BIN" = x"false" ]
+  [ -d /run/systemd/system ] && \
+    [ x"$SERVICE_BIN" = x"false" ] && [ x"$SUPERVISOR_BIN" = x"false" ]
 }
 
 
