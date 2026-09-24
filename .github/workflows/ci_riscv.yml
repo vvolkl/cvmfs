@@ -1,7 +1,5 @@
-name: cloudtests_riscv
+name: packages_riscv
 on:
-  pull_request:
-    branches: [devel, cvmfs*]
   workflow_dispatch:
 
 jobs:
