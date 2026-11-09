@@ -10,7 +10,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -401,13 +403,23 @@ class PosixQuotaManager : public QuotaManager {
   std::vector<shash::Short> CollectAllOpenHashes();
 
   /**
-   * Private to one collector thread, so a thread stuck in getxattr() can
-   * outlive CollectAllOpenHashes()
+   * Shared between CollectAllOpenHashes() and one collector thread; whoever
+   * lets go last frees it, so a thread stuck in getxattr() can outlive the
+   * collection without leaking its hashes
    */
   struct CollectorHandler {
     std::string mountpoint;
     std::vector<shash::Short> hashes;
+    std::atomic<bool> done{false};
   };
+
+  /**
+   * Collectors that missed the deadline and are still running, by mountpoint.
+   * A hanging mountpoint gets no new collector until its old one finishes, so
+   * stuck threads do not pile up over cleanup rounds.
+   */
+  std::map<std::string, std::shared_ptr<CollectorHandler> > stray_collectors_;
+  pthread_mutex_t lock_stray_collectors_;
 
   static void *CollectMountpointsHashes(void *data);
 };  // class PosixQuotaManager

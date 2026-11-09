@@ -1943,10 +1943,15 @@ PosixQuotaManager::PosixQuotaManager(const uint64_t limit,
   cleanup_recorder_.AddRecorder(20 * 60, 60 * 60 * 18);
   // last 4 days with hour resolution
   cleanup_recorder_.AddRecorder(60 * 60, 60 * 60 * 24 * 4);
+
+  const int retval = pthread_mutex_init(&lock_stray_collectors_, nullptr);
+  assert(retval == 0);
 }
 
 
 PosixQuotaManager::~PosixQuotaManager() {
+  pthread_mutex_destroy(&lock_stray_collectors_);
+
   if (!initialized_)
     return;
 
@@ -2334,53 +2339,64 @@ void PosixQuotaManager::ManagedReadHalfPipe(int fd, void *buf, size_t nbyte) {
 void *PosixQuotaManager::CollectMountpointsHashes(void *data) {
 #ifndef __APPLE__
   pthread_setname_np(pthread_self(), "hash_collector");
-  auto *handler = static_cast<CollectorHandler *>(data);
+  std::unique_ptr<std::shared_ptr<CollectorHandler> > ref(
+      static_cast<std::shared_ptr<CollectorHandler> *>(data));
+  CollectorHandler *handler = ref->get();
 
-  const std::string mountpoint = handler->mountpoint;
-  ssize_t n = getxattr(mountpoint.c_str(), "user.list_open_hashes", nullptr, 0);
-  if (n < 0) {
-    pthread_exit(nullptr);
-  }
-  std::vector<char> buf((size_t)n);
-  n = getxattr(mountpoint.c_str(), "user.list_open_hashes", buf.data(),
-               buf.size());
-  if (n < 0) {
-    pthread_exit(nullptr);
-  }
-
-  std::vector<std::string> hash_strs;
-  std::string hash_str;
-  for (const char c : buf) {
-    if (c == '\n') {
-      hash_strs.push_back(hash_str);
-      hash_str.clear();
-    } else {
-      hash_str += c;
+  const char *mountpoint = handler->mountpoint.c_str();
+  ssize_t n = getxattr(mountpoint, "user.list_open_hashes", nullptr, 0);
+  if (n >= 0) {
+    std::vector<char> buf(static_cast<size_t>(n));
+    n = getxattr(mountpoint, "user.list_open_hashes", buf.data(), buf.size());
+    if (n >= 0) {
+      std::string hash_str;
+      for (ssize_t i = 0; i < n; ++i) {
+        if (buf[i] == '\n') {
+          handler->hashes.push_back(
+              shash::Short(shash::MkFromHexPtr(shash::HexPtr(hash_str))));
+          hash_str.clear();
+        } else {
+          hash_str += buf[i];
+        }
+      }
     }
   }
-  for (auto hash_str : hash_strs) {
-    handler->hashes.push_back(
-        shash::Short(shash::MkFromHexPtr(shash::HexPtr(hash_str))));
-  }
+  handler->done.store(true);
 #endif
-  pthread_exit(nullptr);
+  return nullptr;
 }
 
 std::vector<shash::Short> PosixQuotaManager::CollectAllOpenHashes() {
   std::vector<shash::Short> result;
 #ifndef __APPLE__
-  std::vector<CollectorHandler *> handlers;
+  const MutexLockGuard guard(&lock_stray_collectors_);
+  for (auto it = stray_collectors_.begin(); it != stray_collectors_.end();) {
+    if (it->second->done.load())
+      it = stray_collectors_.erase(it);
+    else
+      ++it;
+  }
+
+  std::vector<std::shared_ptr<CollectorHandler> > handlers;
   std::vector<pthread_t> threads;
   for (size_t i = 0; i < mountpoints_.size(); ++i) {
-    CollectorHandler *handler = new CollectorHandler();
+    if (stray_collectors_.count(mountpoints_[i]) > 0) {
+      LogCvmfs(kLogQuota, kLogDebug | kLogSyslogWarn,
+               "open hash collector for %s still hanging, skipping",
+               mountpoints_[i].c_str());
+      continue;
+    }
+    std::shared_ptr<CollectorHandler> handler(new CollectorHandler());
     handler->mountpoint = mountpoints_[i];
+    std::shared_ptr<CollectorHandler> *thread_ref =
+        new std::shared_ptr<CollectorHandler>(handler);
     pthread_t thread;
-    if (pthread_create(&thread, nullptr, CollectMountpointsHashes, handler)
+    if (pthread_create(&thread, nullptr, CollectMountpointsHashes, thread_ref)
         != 0) {
       LogCvmfs(kLogQuota, kLogDebug | kLogSyslogWarn,
                "failed to start open hash collector for %s",
                mountpoints_[i].c_str());
-      delete handler;
+      delete thread_ref;
       continue;
     }
     handlers.push_back(handler);
@@ -2397,7 +2413,7 @@ std::vector<shash::Short> PosixQuotaManager::CollectAllOpenHashes() {
         --remaining;
         result.insert(result.end(), handlers[i]->hashes.begin(),
                       handlers[i]->hashes.end());
-        delete handlers[i];
+        handlers[i].reset();
       }
     }
     if (remaining == 0 || platform_monotonic_time_ns() >= deadline)
@@ -2409,8 +2425,8 @@ std::vector<shash::Short> PosixQuotaManager::CollectAllOpenHashes() {
     for (size_t i = 0; i < threads.size(); ++i) {
       if (joined[i])
         continue;
-      // The thread may still write into its handler, so the handler is leaked
       pthread_detach(threads[i]);
+      stray_collectors_[handlers[i]->mountpoint] = handlers[i];
     }
     LogCvmfs(kLogQuota, kLogDebug | kLogSyslogWarn,
              "open hash collection timed out, %zu of %zu mountpoints did not "
