@@ -55,8 +55,11 @@ echo "detected upstream version: $cvmfs_version"
 echo "building CernVM-FS $cvmfs_version in '$CVMFS_RESULT_LOCATION' from '$CVMFS_SOURCE_LOCATION'"
 cd $CVMFS_RESULT_LOCATION
 
+# The vendored sqlite: cvmfs reconfigures sqlite globally, which must not
+# happen to the system libsqlite3 that frameworks share
 cmake -DCMAKE_INSTALL_PREFIX:PATH=$CVMFS_INSTALL_PREFIX          \
       -DBUILTIN_EXTERNALS_EXCLUDE=${CVMFS_EXTERNALS_EXCLUDE:-""} \
+      -DCMAKE_DISABLE_FIND_PACKAGE_sqlite3=TRUE         \
       -DCMAKE_CXX_STANDARD=11                           \
       -DBUILD_SERVER=no                                 \
       -DBUILD_SERVER_DEBUG=no                           \
@@ -65,6 +68,9 @@ cmake -DCMAKE_INSTALL_PREFIX:PATH=$CVMFS_INSTALL_PREFIX          \
       $OPENSSL_INCLUDE                                  \
       $CVMFS_SOURCE_LOCATION
 make -j $(get_number_of_cpu_cores)
+for lib in cvmfs/libcvmfs_*.dylib; do
+  ! otool -L $lib | grep -qi libsqlite3 || die "$lib links against a shared libsqlite3"
+done
 
 cvmfs_build_tag="cvmfs-${cvmfs_version}"
 echo "creating package: $cvmfs_build_tag"
