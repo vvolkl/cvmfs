@@ -1,0 +1,97 @@
+name: CI_MacOS_NFS_DD4hep
+
+# Builds DD4hep against an LCG nightly view mounted over the NFS frontend, as
+# in AIDASoft/DD4hep's macOS workflow. "stock" uses the released package as is;
+# "patched" swaps in libcvmfs_nfs built from this tree against the system
+# libsqlite3 (the linkage of the released package).
+
+on:
+  push:
+    branches: [ 'fix-sqlite-memstatus-macos' ]
+  workflow_dispatch:
+
+jobs:
+  dd4hep:
+    runs-on: macos-15
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [stock, patched]
+    env:
+      LCG: dev3/arm64-mac15-clang170-opt
+      DD4HEP_SHA: eea29f88d463727c73c3b1b55314a1bd8d9085bf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cvmfs-src
+
+      - name: Build libcvmfs_nfs (system sqlite)
+        if: matrix.variant == 'patched'
+        run: |
+          brew install ninja
+          cmake -S cvmfs-src -B cvmfs-build -G Ninja \
+            -DBUILTIN_EXTERNALS=ON \
+            -DBUILD_CVMFS=ON -DBUILD_LIBCVMFS=OFF -DBUILD_LIBCVMFS_CACHE=OFF \
+            -DBUILD_SERVER=OFF -DBUILD_RECEIVER=OFF -DBUILD_GEOAPI=OFF \
+            -DBUILD_UNITTESTS=OFF -DBUILD_MANPAGES=OFF \
+            -DCVMFS_MACFUSE=OFF -DBUILD_NFS_FRONTEND=ON \
+            -DBUILTIN_EXTERNALS_EXCLUDE="zlib;sqlite3"
+          cmake --build cvmfs-build --target cvmfs_nfs
+          otool -L cvmfs-build/cvmfs/libcvmfs_nfs.dylib | grep libsqlite3
+
+      - uses: cvmfs-contrib/github-action-cvmfs@af7372aa6001a26a7f16157181de31485bb8add0
+        with:
+          cvmfs_repositories: sft.cern.ch,sft-nightlies.cern.ch,geant4.cern.ch
+
+      - name: Install patched libcvmfs_nfs and remount
+        if: matrix.variant == 'patched'
+        run: |
+          for r in geant4.cern.ch sft-nightlies.cern.ch sft.cern.ch cvmfs-config.cern.ch; do
+            sudo umount /Volumes/cvmfs/$r || true
+          done
+          sleep 3
+          sudo pkill -f __nfs_guardian__ || true
+          sudo cp cvmfs-build/cvmfs/libcvmfs_nfs.2.15.0.dylib /usr/local/lib/
+          for r in sft.cern.ch sft-nightlies.cern.ch geant4.cern.ch; do
+            sudo mkdir -p /Volumes/cvmfs/$r
+            sudo mount -t cvmfs $r /Volumes/cvmfs/$r
+          done
+          mount | grep cvmfs
+
+      - name: Checkout DD4hep
+        run: |
+          git clone https://github.com/AIDASoft/DD4hep.git
+          git -C DD4hep checkout $DD4HEP_SHA
+
+      - uses: aidasoft/run-lcg-view@d8db17c61216548c9192889942d46ff2d7c3a3b6
+        with:
+          release-platform: ${{ env.LCG }}
+          run: |
+            cd DD4hep
+            mkdir build
+            cd build
+            unset CPATH
+            source ../.github/scripts/common_cmake_opts.sh
+            cmake $=COMMON_CMAKE_OPTS -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_STANDARD=20 ..
+            cmake -DDD4HEP_HEPMC3_COMPRESSION_SUPPORT=ON -DDD4HEP_USE_G4HEPEM=ON ..
+            ninja
+
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p logs
+          mount | grep cvmfs > logs/mounts.txt || true
+          pgrep -fl cvmfs2 > logs/processes.txt || true
+          sudo find / -name 'stacktrace.*' -path '*cvmfs*' -exec cp {} logs/ \; 2>/dev/null || true
+          sudo log show --last 150m --style compact \
+            --predicate 'process == "cvmfs2" OR process == "mount_nfs"' > logs/system.log 2>/dev/null || true
+          sudo chmod -R a+r logs
+          ls -la logs
+          for f in logs/stacktrace.*; do [ -f "$f" ] && head -5 "$f"; done || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dd4hep-nfs-${{ matrix.variant }}
+          path: logs
