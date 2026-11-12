@@ -60,11 +60,15 @@ jobs:
           mount | grep cvmfs
 
       - name: Checkout DD4hep
-        run: |
-          git clone https://github.com/AIDASoft/DD4hep.git
-          git -C DD4hep checkout $DD4HEP_SHA
+        uses: actions/checkout@v4
+        timeout-minutes: 10
+        with:
+          repository: AIDASoft/DD4hep
+          ref: ${{ env.DD4HEP_SHA }}
+          path: DD4hep
 
       - uses: aidasoft/run-lcg-view@d8db17c61216548c9192889942d46ff2d7c3a3b6
+        timeout-minutes: 100
         with:
           release-platform: ${{ env.LCG }}
           run: |
