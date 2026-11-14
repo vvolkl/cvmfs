@@ -1,0 +1,196 @@
+name: CI_MacOS_NFS_Stall
+
+# Runs AIDASoft/DD4hep's macOS build and tests over the NFS frontend and
+# samples cvmfs2 whenever it stops answering NFS requests.  With
+# deadtimeout=120 such a stall makes the kernel force-unmount the repository
+# and every process mapping a library from it dies with SIGBUS.
+#   plain:    package defaults
+#   nodead:   CVMFS_NFS_MOUNT_OPTIONS=deadtimeout=0, survives stalls so their
+#             full length and cause can be recorded
+#   noupdate: CVMFS_AUTO_UPDATE=no, no catalog switches during the job
+on:
+  push:
+    branches: [ 'ci-macos-nfs-stall*' ]
+  workflow_dispatch:
+    inputs:
+      pkg:
+        description: macOS package URL
+        default: https://ecsft.cern.ch/dist/cvmfs/prerelease/cvmfs-2.15.0-pre5/cvmfs-2.15.0~pre5.pkg
+      matrix:
+        description: JSON list of {LCG, variant}; empty runs the full matrix
+        default: ''
+
+env:
+  PKG: ${{ inputs.pkg || 'https://ecsft.cern.ch/dist/cvmfs/prerelease/cvmfs-2.15.0-pre5/cvmfs-2.15.0~pre5.pkg' }}
+  REPOS: sft-nightlies.cern.ch sft.cern.ch geant4.cern.ch
+  # wdconinc/DD4hep patch-13 as in AIDASoft/DD4hep run 43640275205
+  DD4HEP_SHA: a922955af63043ce56ffb8c42a4a43edc41c6f7f
+
+jobs:
+  dd4hep:
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.matrix || '[{"LCG":"dev4/arm64-mac15-clang170-opt","variant":"plain"},{"LCG":"dev4/arm64-mac15-clang170-opt","variant":"nodead"},{"LCG":"dev3/arm64-mac15-clang170-opt","variant":"nodead"},{"LCG":"dev4/arm64-mac15-clang170-opt","variant":"noupdate"}]') }}
+    env:
+      LOGS: ${{ github.workspace }}/logs
+    steps:
+      - name: Start log stream
+        run: |
+          mkdir -p "$LOGS"
+          sw_vers; uname -a; sysctl -n hw.ncpu
+          sudo sh -c "nohup log stream --style compact --level debug \
+            --predicate 'process == \"cvmfs2\" OR process == \"mount_nfs\" OR (process == \"kernel\" AND eventMessage CONTAINS[c] \"nfs\")' \
+            > $LOGS/logstream.txt 2>&1 &"
+
+      - uses: cvmfs-contrib/github-action-cvmfs@6d6f483b3625214f88977d62575b69a55d21828e
+        with:
+          cvmfs_repositories: sft.cern.ch,sft-nightlies.cern.ch,geant4.cern.ch
+          cvmfs_quota_limit: 15000
+          cvmfs_macos_pkg_location: ${{ env.PKG }}
+
+      - name: Configure variant and remount
+        run: |
+          case "${{ matrix.variant }}" in
+            nodead)   echo "CVMFS_NFS_MOUNT_OPTIONS=deadtimeout=0" | sudo tee -a /etc/cvmfs/default.local ;;
+            noupdate) echo "CVMFS_AUTO_UPDATE=no" | sudo tee -a /etc/cvmfs/default.local ;;
+          esac
+          for r in $REPOS; do sudo umount /Volumes/cvmfs/$r; done
+          for r in $REPOS; do sudo mount -t cvmfs $r /Volumes/cvmfs/$r; done
+          mount | grep cvmfs | tee "$LOGS/mounts-start.txt"
+          for r in $REPOS; do
+            echo "=== $r"
+            cvmfs_config showconfig $r 2>&1 | grep -E "AUTO_UPDATE|MAX_TTL|NFS|SERVER_URL|USE_CDN|TIMEOUT|MAX_RETRIES|QUOTA"
+          done | tee "$LOGS/config.txt"
+
+      - name: Start stall watchdog
+        run: |
+          cat > "$RUNNER_TEMP/watchdog.sh" << 'EOF'
+          #!/bin/bash
+          # Probes each mount with lookups of fresh names (always reach cvmfs2).
+          # A probe pending for more than 5 s is a stall: sample the server
+          # and dump its counters every 15 s until the probe returns.
+          r=$1; out=$LOGS/stall-$r; mkdir -p $out
+          t() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+          now() { perl -MTime::HiRes=time -e 'printf "%.1f", time'; }
+          i=0
+          while true; do
+            i=$((i+1))
+            t 900 stat /Volumes/cvmfs/$r/.stallprobe-$i >/dev/null 2>&1 &
+            probe=$!; start=$(now); n=0
+            while kill -0 $probe 2>/dev/null; do
+              sleep 1; n=$((n+1))
+              if [ $n -ge 5 ] && [ $(( (n-5) % 15 )) -eq 0 ] && [ $n -le 245 ]; then
+                ts=$(date -u +%H%M%S)
+                pid=$(t 5 cvmfs_talk -i $r pid 2>/dev/null)
+                echo "$(date -u +%FT%TZ) $r probe $i pending ${n}s, pid=$pid" | tee -a $out/stalls.txt
+                {
+                  echo "##### $(date -u +%FT%TZ) pending ${n}s"
+                  t 10 cvmfs_talk -i $r revision
+                  t 10 cvmfs_talk -i $r internal affairs | grep -E '^[A-Za-z0-9_.-]+\|[1-9-]' | cut -d'|' -f1,2 | tr '\n' ' '
+                  echo
+                  t 10 cvmfs_talk -i $r host info
+                  t 10 cvmfs_talk -i $r proxy info
+                  echo "tcp: $(lsof -a -p $pid -i TCP 2>/dev/null | grep -c ESTABLISHED) established"
+                } >> $out/talk-$ts.txt 2>&1
+                [ -n "$pid" ] && t 30 sample $pid 3 -mayDie -file $out/sample-$ts.txt >/dev/null 2>&1 &
+              fi
+            done
+            wait $probe; rc=$?
+            dur=$(perl -e "printf '%.1f', $(now) - $start")
+            if perl -e "exit !($dur > 2)"; then
+              echo "$(date -u +%FT%TZ) $r probe $i took ${dur}s rc=$rc" | tee -a $out/stalls.txt
+            fi
+            sleep 1
+          done
+          EOF
+          chmod +x "$RUNNER_TEMP/watchdog.sh"
+          for r in $REPOS; do
+            sudo -E nohup "$RUNNER_TEMP/watchdog.sh" $r > "$LOGS/watchdog-$r.txt" 2>&1 &
+          done
+          # Revision log: catalog switches line up with stalls or not
+          cat > "$RUNNER_TEMP/revisions.sh" << 'EOF'
+          #!/bin/bash
+          t() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+          while true; do
+            echo "$(date -u +%FT%TZ) $(for r in $REPOS; do echo -n "$r=$(t 5 cvmfs_talk -i $r revision 2>/dev/null) "; done)"
+            sleep 30
+          done
+          EOF
+          chmod +x "$RUNNER_TEMP/revisions.sh"
+          nohup "$RUNNER_TEMP/revisions.sh" > "$LOGS/revisions.txt" 2>&1 &
+
+      - name: Checkout DD4hep
+        uses: actions/checkout@v4
+        timeout-minutes: 10
+        with:
+          repository: wdconinc/DD4hep
+          ref: ${{ env.DD4HEP_SHA }}
+          path: DD4hep
+
+      - uses: aidasoft/run-lcg-view@d8db17c61216548c9192889942d46ff2d7c3a3b6
+        timeout-minutes: 150
+        with:
+          release-platform: ${{ matrix.LCG }}
+          run: |
+            cd DD4hep
+            source .github/scripts/select_macos_sdk.sh
+            mkdir build
+            cd build
+            unset CPATH
+            source ../.github/scripts/common_cmake_opts.sh
+            {
+              cmake $=COMMON_CMAKE_OPTS -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_STANDARD=20 .. &&
+              if [[ ${{ matrix.LCG }} =~ dev[34] ]]; then
+                cmake -DDD4HEP_HEPMC3_COMPRESSION_SUPPORT=ON -DDD4HEP_USE_G4HEPEM=ON ..
+              fi &&
+              ninja install &&
+              . ../bin/thisdd4hep.sh &&
+              { ctest --output-on-failure -j"$(getconf _NPROCESSORS_ONLN)"; echo "ctest rc=$?"; } &&
+              cd ../examples/ && mkdir build && cd build &&
+              source ../../.github/scripts/common_cmake_opts.sh &&
+              cmake $=COMMON_EXAMPLES_CMAKE_OPTS -DCMAKE_CXX_STANDARD=20 .. &&
+              ninja install &&
+              { ctest --output-on-failure -j"$(getconf _NPROCESSORS_ONLN)"; echo "examples ctest rc=$?"; }
+            } 2>&1 | tee $LOGS/build.log
+            rc=${pipestatus[1]}
+            echo "pipeline rc=$rc"
+            exit $rc
+
+      - name: Collect logs
+        if: always()
+        timeout-minutes: 10
+        run: |
+          t() { perl -e 'alarm shift; exec @ARGV' "$@"; }
+          sudo pkill -f watchdog.sh || true
+          pkill -f revisions.sh || true
+          mount | grep cvmfs > "$LOGS/mounts-end.txt" || true
+          for r in $REPOS; do
+            { echo "=== $r"; t 10 cvmfs_talk -i $r internal affairs; t 10 cvmfs_talk -i $r host info; } >> "$LOGS/talk-end.txt" 2>&1
+          done
+          sudo pkill -f "log stream" || true
+          sudo log show --last 180m --style compact \
+            --predicate 'process == "cvmfs2" OR process == "mount_nfs" OR (process == "kernel" AND eventMessage CONTAINS[c] "nfs")' \
+            > "$LOGS/system.log" 2>/dev/null || true
+          sudo sh -c "cp /Library/Logs/DiagnosticReports/cvmfs2* ~runner/Library/Logs/DiagnosticReports/cvmfs2* $LOGS/ 2>/dev/null" || true
+          sudo chmod -R a+r "$LOGS"
+          echo "::group::stalls"
+          cat "$LOGS"/stall-*/stalls.txt 2>/dev/null || echo "no stalls"
+          echo "::endgroup::"
+          echo "::group::kernel nfs"
+          grep -iE "nfs server|not responding|alive again|dead|unmount" "$LOGS/logstream.txt" | head -50 || true
+          echo "::endgroup::"
+          echo "::group::catalog switches"
+          grep -E "switched to catalog|recalling|recall failed|sent [0-9]+ recalls" "$LOGS/logstream.txt" | head -50 || true
+          echo "::endgroup::"
+          echo "::group::crashes"
+          grep -nE "Bus error|code=13[89]|exit code 13[89]|rc=13[89]|SIGBUS" "$LOGS/build.log" | head -20 || true
+          echo "::endgroup::"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nfs-stall-${{ matrix.variant }}-${{ strategy.job-index }}
+          path: logs
