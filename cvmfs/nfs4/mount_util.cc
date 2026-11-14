@@ -155,12 +155,13 @@ std::string NfsMountOptions(uint16_t port) {
 #ifdef __APPLE__
   // Not soft: the macOS client times out soft-mount READs after well under a
   // second under load, regardless of timeo.  A dead cvmfs2 is covered by the
-  // guardian (see guardian.h), and deadtimeout lets the kernel give up on a
-  // server that stays silent anyway.  rdonly is incompatible with soft but
-  // not with hard mounts; the lock options are rejected for NFSv4.  Without
-  // rsize, the client reads in 32 KiB requests.
+  // guardian (see guardian.h).  deadtimeout=0: a dead mount is force-unmounted
+  // and every binary mapped from it gets SIGBUS, so a live but slow cvmfs2
+  // must be waited for, as with FUSE.  rdonly is incompatible with soft
+  // but not with hard mounts; the lock options are rejected for NFSv4.
+  // Without rsize, the client reads in 32 KiB requests.
   snprintf(buf, sizeof(buf),
-           "vers=4,tcp,port=%u,rdonly,intr,deadtimeout=120,timeo=600,"
+           "vers=4,tcp,port=%u,rdonly,intr,deadtimeout=0,timeo=600,"
            "retrans=2,rsize=1048576,readahead=4,nobrowse,namedattr",
            port);
 #else
