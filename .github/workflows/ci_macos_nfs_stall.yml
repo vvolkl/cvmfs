@@ -8,6 +8,9 @@ name: CI_MacOS_NFS_Stall
 #   nodead:   CVMFS_NFS_MOUNT_OPTIONS=deadtimeout=0, survives stalls so their
 #             full length and cause can be recorded
 #   noupdate: CVMFS_AUTO_UPDATE=no, no catalog switches during the job
+#   nfsdebug: as nodead, plus the RPC server's per-request trace
+#             (CVMFS_NFS4_DEBUG) of sft-nightlies: shows whether requests
+#             sent during a stall are received and queued
 on:
   push:
     branches: [ 'ci-macos-nfs-stall*' ]
@@ -33,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.matrix || '[{"LCG":"dev4/arm64-mac15-clang170-opt","variant":"plain"},{"LCG":"dev4/arm64-mac15-clang170-opt","variant":"nodead"},{"LCG":"dev3/arm64-mac15-clang170-opt","variant":"nodead"},{"LCG":"dev4/arm64-mac15-clang170-opt","variant":"noupdate"}]') }}
+        include: ${{ fromJSON(inputs.matrix || '[{"LCG":"dev4/arm64-mac15-clang170-opt","variant":"plain"},{"LCG":"dev4/arm64-mac15-clang170-opt","variant":"nodead"},{"LCG":"dev4/arm64-mac15-clang170-opt","variant":"nfsdebug"},{"LCG":"dev3/arm64-mac15-clang170-opt","variant":"nfsdebug"}]') }}
     env:
       LOGS: ${{ github.workspace }}/logs
     steps:
@@ -54,11 +57,19 @@ jobs:
       - name: Configure variant and remount
         run: |
           case "${{ matrix.variant }}" in
-            nodead)   echo "CVMFS_NFS_MOUNT_OPTIONS=deadtimeout=0" | sudo tee -a /etc/cvmfs/default.local ;;
+            nodead|nfsdebug) echo "CVMFS_NFS_MOUNT_OPTIONS=deadtimeout=0" | sudo tee -a /etc/cvmfs/default.local ;;
             noupdate) echo "CVMFS_AUTO_UPDATE=no" | sudo tee -a /etc/cvmfs/default.local ;;
           esac
           for r in $REPOS; do sudo umount /Volumes/cvmfs/$r; done
-          for r in $REPOS; do sudo mount -t cvmfs $r /Volumes/cvmfs/$r; done
+          # cvmfs2 runs unprivileged and opens the trace file itself
+          touch "$RUNNER_TEMP/nfs4debug.log"; chmod 666 "$RUNNER_TEMP/nfs4debug.log"
+          for r in $REPOS; do
+            if [ "${{ matrix.variant }}" = nfsdebug ] && [ $r = sft-nightlies.cern.ch ]; then
+              sudo env CVMFS_NFS4_DEBUG="$RUNNER_TEMP/nfs4debug.log" mount -t cvmfs $r /Volumes/cvmfs/$r
+            else
+              sudo mount -t cvmfs $r /Volumes/cvmfs/$r
+            fi
+          done
           mount | grep cvmfs | tee "$LOGS/mounts-start.txt"
           for r in $REPOS; do
             echo "=== $r"
@@ -183,6 +194,8 @@ jobs:
                       ok = False
                   else:
                       rxid, desc = describe(reply)
+                      valid = rxid == xid and desc == 'accept_stat 0'
+                      ok = ok and valid
                       print('%s %s: connect %.1f ms, write %.1f ms, reply %.1f ms, xid %s, %s'
                             % (ts(), flavor, t_conn, t_write, t_reply,
                                'ok' if rxid == xid else 'MISMATCH %s' % rxid, desc))
@@ -278,6 +291,12 @@ jobs:
               sleep 1; n=$((n+1))
               if [ $n -ge 5 ] && [ $(( (n-5) % 15 )) -eq 0 ] && [ $n -le 245 ]; then
                 ts=$(date -u +%H%M%S)
+                # Save the onset first; the diagnostics below can take a while
+                if [ "$r" = sft-nightlies.cern.ch ] && { [ $n -eq 5 ] || [ $n -eq 125 ]; }; then
+                  mkdir -p $out/pcap-$ts
+                  find $RUNNER_TEMP/pcap -name 'lo0.pcap*' -mmin -4 -exec cp -p {} $out/pcap-$ts/ \;
+                  [ -s $RUNNER_TEMP/nfs4debug.log ] && tail -n 300000 $RUNNER_TEMP/nfs4debug.log | gzip > $out/nfs4debug-$ts.log.gz
+                fi
                 pid=$(t 5 cvmfs_talk -i $r pid 2>/dev/null)
                 echo "$(date -u +%FT%TZ) $r probe $i pending ${n}s, pid=$pid" | tee -a $out/stalls.txt
                 {
@@ -320,10 +339,6 @@ jobs:
                     t 10 cvmfs_talk -i $r host info
                   } >> $out/fds-$ts.txt 2>&1
                 fi
-                if [ "$r" = sft-nightlies.cern.ch ] && { [ $n -eq 5 ] || [ $n -eq 125 ]; }; then
-                  mkdir -p $out/pcap-$ts
-                  find $RUNNER_TEMP/pcap -name 'lo0.pcap*' -mmin -4 -exec cp -p {} $out/pcap-$ts/ \;
-                fi
               fi
             done
             wait $probe; rc=$?
@@ -346,6 +361,10 @@ jobs:
             echo "$(date -u +%FT%TZ) $(for r in $REPOS; do echo -n "$r=$(t 5 cvmfs_talk -i $r revision 2>/dev/null) "; done)"
             # Baseline load, to compare with the stall snapshots
             echo "  $(sysctl -n vm.loadavg) $(t 5 memory_pressure -Q | tail -1) $(sysctl -n vm.swapusage)"
+            pid=$(t 5 cvmfs_talk -i sft-nightlies.cern.ch pid 2>/dev/null)
+            echo "  sft-nightlies: fds=$(t 10 lsof -b -w -p $pid 2>/dev/null | wc -l | tr -d ' ')" \
+              "$(t 5 cvmfs_talk -i sft-nightlies.cern.ch internal affairs 2>/dev/null \
+                 | grep -E '^(cvmfs\.no_open_files|cvmfs\.no_open_dirs|catalog_mgr\.n_nested_listing|cvmfs\.n_fs_open)\|' | cut -d'|' -f1,2 | tr '\n' ' ')"
             sleep 30
           done
           EOF
@@ -399,6 +418,10 @@ jobs:
           sudo pkill tcpdump || true
           mkdir -p "$LOGS/pcap-end"
           ls -t "$RUNNER_TEMP"/pcap/lo0.pcap* 2>/dev/null | head -2 | xargs -I{} cp -p {} "$LOGS/pcap-end/" || true
+          if [ -s "$RUNNER_TEMP/nfs4debug.log" ]; then
+            ls -la "$RUNNER_TEMP/nfs4debug.log"
+            tail -n 2000000 "$RUNNER_TEMP/nfs4debug.log" | gzip > "$LOGS/nfs4debug-end.log.gz"
+          fi
           pkill -f revisions.sh || true
           mount | grep cvmfs > "$LOGS/mounts-end.txt" || true
           for r in $REPOS; do
