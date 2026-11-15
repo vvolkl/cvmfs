@@ -116,6 +116,19 @@ jobs:
                     t 20 lsof -nP -p $pid
                     echo "--- processes"
                     ps -axo pid,ppid,lstart,command | grep -E 'cvmfs2|mount_nfs' | grep -v grep
+                    # Does cvmfs2 answer a fresh TCP client, and can it
+                    # still download?
+                    echo "--- NULL call on a new connection"
+                    t 10 perl -MIO::Socket::INET -e '
+                      my $s = IO::Socket::INET->new(PeerAddr => "127.0.0.1", PeerPort => $ARGV[0]) or die "connect: $!";
+                      my $t0 = time;
+                      $s->syswrite(pack("N*", 0x80000028, 4711, 0, 2, 100003, 4, 0, 0, 0, 0, 0));
+                      my $buf = ""; my $n = $s->sysread($buf, 4);
+                      printf "reply %s after %ds\n", ($n == 4 ? "received" : "missing"), time - $t0;' $port
+                    echo "rc=$?"
+                    echo "--- host probe"
+                    t 30 cvmfs_talk -i $r host probe
+                    t 10 cvmfs_talk -i $r host info
                   } >> $out/fds-$ts.txt 2>&1
                 fi
               fi
