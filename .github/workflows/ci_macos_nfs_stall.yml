@@ -320,6 +320,12 @@ jobs:
                   RPCQ_BROADCAST=$bc t 60 lldb -p $pid --batch \
                     -o "command script import $RUNNER_TEMP/rpcq.py" \
                     > $out/rpcq-$ts.txt 2>&1
+                  # Did the workers drain the queue once the process ran again?
+                  if [ $bc = 1 ]; then
+                    sleep 3
+                    t 60 lldb -p $pid --batch -o "command script import $RUNNER_TEMP/rpcq.py" \
+                      > $out/rpcq-$ts-after.txt 2>&1
+                  fi
                 fi
                 {
                   echo "##### $(date -u +%FT%TZ) pending ${n}s"
@@ -368,6 +374,10 @@ jobs:
           import os
           import lldb
 
+          # 2.15.0~pre5 arm64 libcvmfs_nfsfuse; ReadLoop notifies and
+          # WorkerLoop waits on x19 + QUEUE_COND (std::condition_variable is
+          # a bare pthread_cond_t in libc++)
+          UUID = '71B3E32A-CA36-3C78-94BD-521789A58A29'
           STOPPING, QUEUE_LOCK, QUEUE_COND = 0x1a, 0xd0, 0x110
           Q_MAP, Q_START, Q_SIZE = 0x148, 0x160, 0x168
           PER_BLOCK, JOB_SIZE, JOB_XID = 0x55, 0x30, 0x10
@@ -387,8 +397,8 @@ jobs:
               start = u(proc, this + Q_START, 8)
               print('this=%#x stopping=%s queue_size=%s start=%s'
                     % (this, u(proc, this + STOPPING, 1), size, start))
-              print('queue_lock %s' % hexdump(proc, this + QUEUE_LOCK, 64))
-              print('queue_cond %s' % hexdump(proc, this + QUEUE_COND, 48))
+              print('queue_lock @%#x %s' % (this + QUEUE_LOCK, hexdump(proc, this + QUEUE_LOCK, 64)))
+              print('queue_cond @%#x %s' % (this + QUEUE_COND, hexdump(proc, this + QUEUE_COND, 48)))
               qmap = u(proc, this + Q_MAP, 8)
               for i in range(min(size or 0, 20)):
                   k = start + i
@@ -396,24 +406,42 @@ jobs:
                   print('  job %d xid %s' % (i, u(proc, block + (k % PER_BLOCK) * JOB_SIZE
                                                     + JOB_XID, 4)))
 
+          def x19_of(th, func):
+              for f in th:
+                  if func in (f.GetFunctionName() or ''):
+                      return f.FindRegister('x19').GetValueAsUnsigned()
+              return None
+
           def __lldb_init_module(debugger, internal_dict):
-              proc = debugger.GetSelectedTarget().GetProcess()
-              thises, waiting = {}, 0
+              target = debugger.GetSelectedTarget()
+              proc = target.GetProcess()
+              uuid = None
+              for m in target.module_iter():
+                  if m.GetFileSpec().GetFilename().startswith('libcvmfs_nfsfuse'):
+                      uuid = m.GetUUIDString()
+              print('libcvmfs_nfsfuse uuid %s (expected %s)' % (uuid, UUID))
+              workers, readers, waiting = {}, {}, 0
               for th in proc:
                   names = [f.GetFunctionName() or '' for f in th]
-                  for f in th:
-                      if 'RpcServer::WorkerLoop' in (f.GetFunctionName() or ''):
-                          x19 = f.FindRegister('x19').GetValueAsUnsigned()
-                          thises[x19] = thises.get(x19, 0) + 1
-                          if any('condition_variable::wait' in n for n in names):
-                              waiting += 1
-              print('worker this values: %s, waiting in cv: %d'
-                    % (', '.join('%#x x%d' % kv for kv in thises.items()), waiting))
-              if not thises:
+                  w = x19_of(th, 'RpcServer::WorkerLoop')
+                  r = x19_of(th, 'RpcServer::ReadLoop')
+                  if w is not None:
+                      workers[w] = workers.get(w, 0) + 1
+                      if any('condition_variable::wait' in n for n in names):
+                          waiting += 1
+                  if r is not None:
+                      readers[r] = readers.get(r, 0) + 1
+              fmt = lambda d: ', '.join('%#x x%d' % kv for kv in d.items())
+              print('worker this: %s (waiting in cv: %d)' % (fmt(workers), waiting))
+              print('reader this: %s' % fmt(readers))
+              if not workers:
                   return
-              this = max(thises, key=thises.get)
+              this = max(workers, key=workers.get)
               dump(proc, this)
               if os.environ.get('RPCQ_BROADCAST') == '1':
+                  if uuid != UUID or set(readers) - {this}:
+                      print('not broadcasting: unknown binary or readers on another object')
+                      return
                   th = proc.GetSelectedThread()
                   r = th.GetSelectedFrame().EvaluateExpression(
                       '((int (*)(void *))pthread_cond_broadcast)((void *)%#x)' % (this + QUEUE_COND))
