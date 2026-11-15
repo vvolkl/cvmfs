@@ -20,7 +20,7 @@ on:
         description: macOS package URL
         default: https://ecsft.cern.ch/dist/cvmfs/prerelease/cvmfs-2.15.0-pre5/cvmfs-2.15.0~pre5.pkg
       matrix:
-        description: JSON list of {LCG, variant}; empty runs the full matrix
+        description: JSON list of {LCG, variant, os (default macos-15)}; empty runs the full matrix
         default: ''
 
 env:
@@ -31,7 +31,7 @@ env:
 
 jobs:
   dd4hep:
-    runs-on: macos-15
+    runs-on: ${{ matrix.os || 'macos-15' }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
