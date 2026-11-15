@@ -96,6 +96,16 @@ jobs:
                   echo "tcp: $(lsof -a -p $pid -i TCP 2>/dev/null | grep -c ESTABLISHED) established"
                 } >> $out/talk-$ts.txt 2>&1
                 [ -n "$pid" ] && t 30 sample $pid 3 -mayDie -file $out/sample-$ts.txt >/dev/null 2>&1 &
+                {
+                  echo "##### $(date -u +%FT%TZ) pending ${n}s"
+                  t 10 netstat -anv -p tcp | grep -E '^Proto|127\.0\.0\.1'
+                  t 10 nfsstat -m
+                  t 10 nfsstat -c
+                } >> $out/kernel-$ts.txt 2>&1
+                # Kernel stacks: where the client blocks the probe
+                if [ $n -eq 5 ] || [ $n -eq 50 ] || [ $n -eq 110 ]; then
+                  t 60 spindump -notarget 3 -file $out/spindump-$ts.txt >/dev/null 2>&1 &
+                fi
               fi
             done
             wait $probe; rc=$?
