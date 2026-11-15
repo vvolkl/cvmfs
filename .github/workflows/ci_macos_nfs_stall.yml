@@ -16,6 +16,9 @@ name: CI_MacOS_NFS_Stall
 #             the kernel NFS client: no load from the instrumentation on
 #             the NFS mounts
 #   quietdebug: as quiet, plus the sft-nightlies request trace
+#   noguard:  as quiet, without the NFS guardian (CVMFS_NFS_NO_GUARDIAN)
+#             and the crash watchdog (-o disable_watchdog), so cvmfs2 forks
+#             no helper processes
 on:
   push:
     branches: [ 'ci-macos-nfs-stall*' ]
@@ -64,7 +67,7 @@ jobs:
           case "${{ matrix.variant }}" in
             nodead|nfsdebug) echo "CVMFS_NFS_MOUNT_OPTIONS=deadtimeout=0" | sudo tee -a /etc/cvmfs/default.local ;;
             noupdate) echo "CVMFS_AUTO_UPDATE=no" | sudo tee -a /etc/cvmfs/default.local ;;
-            quiet|quietdebug)
+            quiet|quietdebug|noguard)
               printf 'CVMFS_NFS_MOUNT_OPTIONS=deadtimeout=0\nCVMFS_AUTO_UPDATE=no\n' | sudo tee -a /etc/cvmfs/default.local ;;
           esac
           for r in $REPOS; do sudo umount /Volumes/cvmfs/$r; done
@@ -74,10 +77,13 @@ jobs:
             if { [ "${{ matrix.variant }}" = nfsdebug ] || [ "${{ matrix.variant }}" = quietdebug ]; } \
                && [ $r = sft-nightlies.cern.ch ]; then
               sudo env CVMFS_NFS4_DEBUG="$RUNNER_TEMP/nfs4debug.log" mount -t cvmfs $r /Volumes/cvmfs/$r
+            elif [ "${{ matrix.variant }}" = noguard ]; then
+              sudo env CVMFS_NFS_NO_GUARDIAN=1 mount -t cvmfs -o disable_watchdog $r /Volumes/cvmfs/$r
             else
               sudo mount -t cvmfs $r /Volumes/cvmfs/$r
             fi
           done
+          ps -axo pid,ppid,user,command | grep -E 'cvmfs2|mount_nfs' | grep -v grep | tee "$LOGS/processes-start.txt"
           mount | grep cvmfs | tee "$LOGS/mounts-start.txt"
           for r in $REPOS; do
             echo "=== $r"
@@ -481,7 +487,7 @@ jobs:
                   dump(proc, this)
           EOF
           for r in $REPOS; do
-            case "${{ matrix.variant }}" in quiet*) mode=rpc ;; *) mode=stat ;; esac
+            case "${{ matrix.variant }}" in quiet*|noguard) mode=rpc ;; *) mode=stat ;; esac
             sudo -E nohup "$RUNNER_TEMP/watchdog.sh" $r $mode > "$LOGS/watchdog-$r.txt" 2>&1 &
           done
           # Revision log: catalog switches line up with stalls or not
