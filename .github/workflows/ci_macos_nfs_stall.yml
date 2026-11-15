@@ -105,9 +105,18 @@ jobs:
                   t 10 vm_stat
                   t 10 top -l 1 -n 15 -o cpu -stats pid,command,cpu,mem,state
                 } >> $out/kernel-$ts.txt 2>&1
-                # Kernel stacks: where the client blocks the probe
-                if [ $n -eq 5 ] || [ $n -eq 50 ] || [ $n -eq 110 ]; then
-                  t 60 spindump -notarget 3 -file $out/spindump-$ts.txt >/dev/null 2>&1 &
+                # Which descriptors and processes hold the NFS sockets: the
+                # server threads wait on fds that no longer match them
+                if [ $n -eq 5 ] || [ $n -eq 95 ]; then
+                  port=$(t 10 nfsstat -m | sed -n "\|^/Volumes/cvmfs/$r |,/^\$/p" | grep -m1 -oE 'port=[0-9]+' | cut -d= -f2)
+                  {
+                    echo "##### $(date -u +%FT%TZ) pending ${n}s port=$port"
+                    t 20 lsof -nP -iTCP:$port
+                    echo "--- fds of $pid"
+                    t 20 lsof -nP -p $pid
+                    echo "--- processes"
+                    ps -axo pid,ppid,lstart,command | grep -E 'cvmfs2|mount_nfs' | grep -v grep
+                  } >> $out/fds-$ts.txt 2>&1
                 fi
               fi
             done
