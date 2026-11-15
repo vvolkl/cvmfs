@@ -67,6 +67,200 @@ jobs:
 
       - name: Start stall watchdog
         run: |
+          cat > "$RUNNER_TEMP/rpcprobe.py" << 'EOF'
+          """NFSv4 NULL-call probe against the cvmfs2 NFS server.
+
+            once PORT          fresh connection per credential flavor, one call each
+            loop PORT SECONDS  one persistent connection, a call every SECONDS
+          """
+          import select
+          import socket
+          import struct
+          import sys
+          import time
+
+          LAST = 0x80000000
+          TIMEOUT = 10.0
+
+
+          def ts():
+              return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+
+
+          def null_call(xid, flavor):
+              if flavor == 'sys':
+                  machine = b'probe'
+                  pad = b'\0' * ((4 - len(machine) % 4) % 4)
+                  body = struct.pack('>II', int(time.time()) & 0xffffffff, len(machine))
+                  body += machine + pad + struct.pack('>III', 0, 0, 0)
+                  cred = struct.pack('>II', 1, len(body)) + body
+              else:
+                  cred = struct.pack('>II', 0, 0)
+              msg = struct.pack('>IIIIII', xid, 0, 2, 100003, 4, 0) + cred
+              msg += struct.pack('>II', 0, 0)
+              return struct.pack('>I', LAST | len(msg)) + msg
+
+
+          class Records(object):
+              """Reassembles RPC records from a TCP byte stream"""
+              def __init__(self):
+                  self.buf = b''
+                  self.frags = b''
+
+              def feed(self, data):
+                  self.buf += data
+                  out = []
+                  while len(self.buf) >= 4:
+                      marker = struct.unpack('>I', self.buf[:4])[0]
+                      length = marker & ~LAST
+                      if len(self.buf) < 4 + length:
+                          break
+                      self.frags += self.buf[4:4 + length]
+                      self.buf = self.buf[4 + length:]
+                      if marker & LAST:
+                          out.append(self.frags)
+                          self.frags = b''
+                  return out
+
+              def partial(self):
+                  return len(self.buf) + len(self.frags)
+
+
+          def describe(rec):
+              if len(rec) < 12:
+                  return None, 'short record (%d bytes): %s' % (len(rec), rec.hex())
+              xid, mtype, stat = struct.unpack('>III', rec[:12])
+              if mtype != 1:
+                  return xid, 'not a reply (type %d)' % mtype
+              if stat != 0:
+                  return xid, 'denied (reply_stat %d)' % stat
+              if len(rec) < 24:
+                  return xid, 'truncated accepted reply'
+              vlen = struct.unpack('>I', rec[16:20])[0]
+              off = 20 + ((vlen + 3) & ~3)
+              if len(rec) < off + 4:
+                  return xid, 'truncated accepted reply'
+              accept = struct.unpack('>I', rec[off:off + 4])[0]
+              return xid, 'accept_stat %d%s' % (accept, '' if accept == 0 else ' (error)')
+
+
+          def connect(port):
+              t0 = time.time()
+              s = socket.create_connection(('127.0.0.1', port), timeout=TIMEOUT)
+              return s, (time.time() - t0) * 1000
+
+
+          def once(port):
+              ok = True
+              for i, flavor in enumerate(('none', 'sys')):
+                  xid = 0x50000000 + int(time.time()) % 0x1000000 * 2 + i
+                  try:
+                      s, t_conn = connect(port)
+                  except OSError as e:
+                      print('%s %s: connect failed: %s' % (ts(), flavor, e))
+                      ok = False
+                      continue
+                  t0 = time.time()
+                  s.sendall(null_call(xid, flavor))
+                  t_write = (time.time() - t0) * 1000
+                  records, got, reply = Records(), 0, None
+                  deadline = time.time() + TIMEOUT
+                  while reply is None and time.time() < deadline:
+                      r, _, _ = select.select([s], [], [], max(0, deadline - time.time()))
+                      if not r:
+                          break
+                      data = s.recv(65536)
+                      if not data:
+                          break
+                      got += len(data)
+                      for rec in records.feed(data):
+                          reply = rec
+                  t_reply = (time.time() - t0) * 1000
+                  if reply is None:
+                      print('%s %s: connect %.1f ms, write %.1f ms, NO REPLY after %.0f ms '
+                            '(%d bytes received, %d unparsed)'
+                            % (ts(), flavor, t_conn, t_write, t_reply, got, records.partial()))
+                      ok = False
+                  else:
+                      rxid, desc = describe(reply)
+                      print('%s %s: connect %.1f ms, write %.1f ms, reply %.1f ms, xid %s, %s'
+                            % (ts(), flavor, t_conn, t_write, t_reply,
+                               'ok' if rxid == xid else 'MISMATCH %s' % rxid, desc))
+                  s.close()
+              return 0 if ok else 1
+
+
+          def loop(port, interval):
+              xid = 0x60000000
+              while True:
+                  try:
+                      s, t_conn = connect(port)
+                  except OSError as e:
+                      print('%s connect failed: %s' % (ts(), e), flush=True)
+                      time.sleep(interval)
+                      continue
+                  print('%s connected in %.1f ms from port %d'
+                        % (ts(), t_conn, s.getsockname()[1]), flush=True)
+                  records, pending, next_send = Records(), {}, 0.0
+                  try:
+                      while True:
+                          now = time.time()
+                          if now >= next_send:
+                              xid += 1
+                              flavor = 'sys' if xid % 2 else 'none'
+                              s.sendall(null_call(xid, flavor))
+                              pending[xid] = (now, flavor, False)
+                              next_send = now + interval
+                          for x, (sent, flavor, warned) in list(pending.items()):
+                              if not warned and now - sent > TIMEOUT:
+                                  print('%s xid %d (%s) unanswered for %.0f s, %d pending, '
+                                        '%d bytes unparsed' % (ts(), x, flavor, now - sent,
+                                                               len(pending), records.partial()),
+                                        flush=True)
+                                  pending[x] = (sent, flavor, True)
+                          r, _, _ = select.select([s], [], [], max(0.05, next_send - time.time()))
+                          if not r:
+                              continue
+                          data = s.recv(65536)
+                          if not data:
+                              print('%s connection closed by server, %d pending'
+                                    % (ts(), len(pending)), flush=True)
+                              break
+                          for rec in records.feed(data):
+                              rxid, desc = describe(rec)
+                              if rxid in pending:
+                                  sent, flavor, warned = pending.pop(rxid)
+                                  lat = (time.time() - sent) * 1000
+                                  # Log slow, late or failed replies, and a heartbeat
+                                  if warned or lat > 1000 or 'error' in desc or rxid % 60 == 0:
+                                      print('%s xid %d (%s) %.1f ms, %s'
+                                            % (ts(), rxid, flavor, lat, desc), flush=True)
+                              else:
+                                  print('%s unexpected reply xid %s, %s' % (ts(), rxid, desc),
+                                        flush=True)
+                  except OSError as e:
+                      print('%s socket error: %s, %d pending' % (ts(), e, len(pending)),
+                            flush=True)
+                  s.close()
+                  time.sleep(1)
+
+
+          if __name__ == '__main__':
+              if sys.argv[1] == 'once':
+                  sys.exit(once(int(sys.argv[2])))
+              loop(int(sys.argv[2]), float(sys.argv[3]))
+          EOF
+          nfsport() { nfsstat -m | sed -n "\|^/Volumes/cvmfs/$1 |,/^\$/p" | grep -m1 -oE 'port=[0-9]+' | cut -d= -f2; }
+          # A userspace client on its own connection, before and during a stall:
+          # tells a stuck server from a stuck kernel client
+          for r in $REPOS; do
+            nohup python3 -I "$RUNNER_TEMP/rpcprobe.py" loop $(nfsport $r) 5 > "$LOGS/rpcprobe-$r.txt" 2>&1 &
+          done
+          # Headers and RPC framing of the sft-nightlies NFS traffic in a
+          # ~200 MB ring; the watchdog keeps the files around a stall
+          mkdir -p "$RUNNER_TEMP/pcap"
+          sudo sh -c "nohup tcpdump -i lo0 -n -s 512 -C 20 -W 10 -w $RUNNER_TEMP/pcap/lo0.pcap \
+            tcp port $(nfsport sft-nightlies.cern.ch) > $LOGS/tcpdump.txt 2>&1 &"
           cat > "$RUNNER_TEMP/watchdog.sh" << 'EOF'
           #!/bin/bash
           # Probes each mount with lookups of fresh names (always reach cvmfs2).
@@ -105,31 +299,30 @@ jobs:
                   t 10 vm_stat
                   t 10 top -l 1 -n 15 -o cpu -stats pid,command,cpu,mem,state
                 } >> $out/kernel-$ts.txt 2>&1
-                # Which descriptors and processes hold the NFS sockets: the
-                # server threads wait on fds that no longer match them
+                # Which descriptors and processes hold the NFS sockets.
+                # lsof -b: no stat() of files on the stalled mount.
                 if [ $n -eq 5 ] || [ $n -eq 95 ]; then
                   port=$(t 10 nfsstat -m | sed -n "\|^/Volumes/cvmfs/$r |,/^\$/p" | grep -m1 -oE 'port=[0-9]+' | cut -d= -f2)
                   {
                     echo "##### $(date -u +%FT%TZ) pending ${n}s port=$port"
-                    t 20 lsof -nP -iTCP:$port
+                    t 20 lsof -b -w -nP -iTCP:$port
                     echo "--- fds of $pid"
-                    t 20 lsof -nP -p $pid
+                    t 20 lsof -b -w -nP -p $pid
                     echo "--- processes"
                     ps -axo pid,ppid,lstart,command | grep -E 'cvmfs2|mount_nfs' | grep -v grep
                     # Does cvmfs2 answer a fresh TCP client, and can it
                     # still download?
                     echo "--- NULL call on a new connection"
-                    t 10 perl -MIO::Socket::INET -e '
-                      my $s = IO::Socket::INET->new(PeerAddr => "127.0.0.1", PeerPort => $ARGV[0]) or die "connect: $!";
-                      my $t0 = time;
-                      $s->syswrite(pack("N*", 0x80000028, 4711, 0, 2, 100003, 4, 0, 0, 0, 0, 0));
-                      my $buf = ""; my $n = $s->sysread($buf, 4);
-                      printf "reply %s after %ds\n", ($n == 4 ? "received" : "missing"), time - $t0;' $port
+                    t 40 python3 -I $RUNNER_TEMP/rpcprobe.py once $port
                     echo "rc=$?"
                     echo "--- host probe"
                     t 30 cvmfs_talk -i $r host probe
                     t 10 cvmfs_talk -i $r host info
                   } >> $out/fds-$ts.txt 2>&1
+                fi
+                if [ "$r" = sft-nightlies.cern.ch ] && { [ $n -eq 5 ] || [ $n -eq 125 ]; }; then
+                  mkdir -p $out/pcap-$ts
+                  find $RUNNER_TEMP/pcap -name 'lo0.pcap*' -mmin -4 -exec cp -p {} $out/pcap-$ts/ \;
                 fi
               fi
             done
@@ -202,6 +395,10 @@ jobs:
         run: |
           t() { perl -e 'alarm shift; exec @ARGV' "$@"; }
           sudo pkill -f watchdog.sh || true
+          pkill -f rpcprobe.py || true
+          sudo pkill tcpdump || true
+          mkdir -p "$LOGS/pcap-end"
+          ls -t "$RUNNER_TEMP"/pcap/lo0.pcap* 2>/dev/null | head -2 | xargs -I{} cp -p {} "$LOGS/pcap-end/" || true
           pkill -f revisions.sh || true
           mount | grep cvmfs > "$LOGS/mounts-end.txt" || true
           for r in $REPOS; do
