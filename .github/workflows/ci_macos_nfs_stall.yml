@@ -308,7 +308,19 @@ jobs:
                   t 10 cvmfs_talk -i $r proxy info
                   echo "tcp: $(lsof -a -p $pid -i TCP 2>/dev/null | grep -c ESTABLISHED) established"
                 } >> $out/talk-$ts.txt 2>&1
-                [ -n "$pid" ] && t 30 sample $pid 3 -mayDie -file $out/sample-$ts.txt >/dev/null 2>&1 &
+                spid=
+                [ -n "$pid" ] && { t 30 sample $pid 3 -mayDie -file $out/sample-$ts.txt >/dev/null 2>&1 & spid=$!; }
+                # Is the RPC job queue non-empty while all workers wait? At
+                # 35 s, also broadcast its condition variable: replies that
+                # resume afterwards mean lost wakeups
+                if [ "$r" = sft-nightlies.cern.ch ] && [ -n "$pid" ] \
+                   && { [ $n -eq 20 ] || [ $n -eq 35 ] || [ $n -eq 50 ]; }; then
+                  [ -n "$spid" ] && wait $spid
+                  bc=0; [ $n -eq 35 ] && bc=1
+                  RPCQ_BROADCAST=$bc t 60 lldb -p $pid --batch \
+                    -o "command script import $RUNNER_TEMP/rpcq.py" \
+                    > $out/rpcq-$ts.txt 2>&1
+                fi
                 {
                   echo "##### $(date -u +%FT%TZ) pending ${n}s"
                   t 10 netstat -anv -p tcp | grep -E '^Proto|127\.0\.0\.1'
@@ -350,6 +362,64 @@ jobs:
           done
           EOF
           chmod +x "$RUNNER_TEMP/watchdog.sh"
+          # Offsets into nfs4::RpcServer from the 2.15.0~pre5 arm64 dylib
+          # (WorkerLoop keeps `this` in x19)
+          cat > "$RUNNER_TEMP/rpcq.py" << 'EOF'
+          import os
+          import lldb
+
+          STOPPING, QUEUE_LOCK, QUEUE_COND = 0x1a, 0xd0, 0x110
+          Q_MAP, Q_START, Q_SIZE = 0x148, 0x160, 0x168
+          PER_BLOCK, JOB_SIZE, JOB_XID = 0x55, 0x30, 0x10
+
+          def u(proc, addr, size):
+              err = lldb.SBError()
+              v = proc.ReadUnsignedFromMemory(addr, size, err)
+              return v if err.Success() else None
+
+          def hexdump(proc, addr, size):
+              err = lldb.SBError()
+              b = proc.ReadMemory(addr, size, err)
+              return b.hex() if err.Success() else str(err)
+
+          def dump(proc, this):
+              size = u(proc, this + Q_SIZE, 8)
+              start = u(proc, this + Q_START, 8)
+              print('this=%#x stopping=%s queue_size=%s start=%s'
+                    % (this, u(proc, this + STOPPING, 1), size, start))
+              print('queue_lock %s' % hexdump(proc, this + QUEUE_LOCK, 64))
+              print('queue_cond %s' % hexdump(proc, this + QUEUE_COND, 48))
+              qmap = u(proc, this + Q_MAP, 8)
+              for i in range(min(size or 0, 20)):
+                  k = start + i
+                  block = u(proc, qmap + (k // PER_BLOCK) * 8, 8)
+                  print('  job %d xid %s' % (i, u(proc, block + (k % PER_BLOCK) * JOB_SIZE
+                                                    + JOB_XID, 4)))
+
+          def __lldb_init_module(debugger, internal_dict):
+              proc = debugger.GetSelectedTarget().GetProcess()
+              thises, waiting = {}, 0
+              for th in proc:
+                  names = [f.GetFunctionName() or '' for f in th]
+                  for f in th:
+                      if 'RpcServer::WorkerLoop' in (f.GetFunctionName() or ''):
+                          x19 = f.FindRegister('x19').GetValueAsUnsigned()
+                          thises[x19] = thises.get(x19, 0) + 1
+                          if any('condition_variable::wait' in n for n in names):
+                              waiting += 1
+              print('worker this values: %s, waiting in cv: %d'
+                    % (', '.join('%#x x%d' % kv for kv in thises.items()), waiting))
+              if not thises:
+                  return
+              this = max(thises, key=thises.get)
+              dump(proc, this)
+              if os.environ.get('RPCQ_BROADCAST') == '1':
+                  th = proc.GetSelectedThread()
+                  r = th.GetSelectedFrame().EvaluateExpression(
+                      '((int (*)(void *))pthread_cond_broadcast)((void *)%#x)' % (this + QUEUE_COND))
+                  print('pthread_cond_broadcast -> %s %s' % (r.GetValue(), r.GetError()))
+                  dump(proc, this)
+          EOF
           for r in $REPOS; do
             sudo -E nohup "$RUNNER_TEMP/watchdog.sh" $r > "$LOGS/watchdog-$r.txt" 2>&1 &
           done
