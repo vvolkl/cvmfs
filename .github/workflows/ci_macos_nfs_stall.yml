@@ -101,6 +101,9 @@ jobs:
                   t 10 netstat -anv -p tcp | grep -E '^Proto|127\.0\.0\.1'
                   t 10 nfsstat -m
                   t 10 nfsstat -c
+                  t 10 memory_pressure -Q
+                  t 10 vm_stat
+                  t 10 top -l 1 -n 15 -o cpu -stats pid,command,cpu,mem,state
                 } >> $out/kernel-$ts.txt 2>&1
                 # Kernel stacks: where the client blocks the probe
                 if [ $n -eq 5 ] || [ $n -eq 50 ] || [ $n -eq 110 ]; then
@@ -126,6 +129,8 @@ jobs:
           t() { perl -e 'alarm shift; exec @ARGV' "$@"; }
           while true; do
             echo "$(date -u +%FT%TZ) $(for r in $REPOS; do echo -n "$r=$(t 5 cvmfs_talk -i $r revision 2>/dev/null) "; done)"
+            # Baseline load, to compare with the stall snapshots
+            echo "  $(sysctl -n vm.loadavg) $(t 5 memory_pressure -Q | tail -1) $(sysctl -n vm.swapusage)"
             sleep 30
           done
           EOF
