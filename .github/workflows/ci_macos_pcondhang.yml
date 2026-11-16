@@ -1,0 +1,37 @@
+name: CI_MacOS_PCondHang
+
+# Runs ioquatix/macos-pthread-cond-hang's repro.c: a psynch condition
+# variable stops waking anyone once one waiter is passed over for 2^23 newer
+# waits. The stalled NFS server's cv shows the same end state (U == L, all
+# waiters blocked), so this checks whether the hosted runners are affected.
+on:
+  push:
+    branches: [ 'pcondhang*' ]
+
+jobs:
+  repro:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [ macos-15, macos-14, macos-26 ]
+    steps:
+      - name: Host
+        run: |
+          sw_vers; uname -a
+          sysctl hw.model machdep.cpu.brand_string hw.ncpu kern.hv_vmm_present 2>/dev/null || true
+      - name: Build
+        run: |
+          curl -fsSL -o repro.c https://raw.githubusercontent.com/ioquatix/macos-pthread-cond-hang/f19b7f770ff91b4d68ea1785a7e1e34127ad4fc5/repro.c
+          clang -O2 -o repro repro.c
+      - name: Run
+        run: |
+          # repro exits 1 when the condition variable hangs
+          set +e
+          perl -e 'alarm 1500; exec @ARGV' ./repro
+          rc=$?
+          echo "repro rc=$rc"
+          if [ $rc = 1 ]; then echo "::warning::psynch condition variable hang reproduced"; fi
+          exit 0
