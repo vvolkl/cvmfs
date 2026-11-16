@@ -5,6 +5,8 @@ name: CI_MacOS_CVRepro
 # preemption, fork/spawn, signal and suspension stress) on hosted runners, to
 # tell a macOS psynch bug from something specific to the runner VMs.
 on:
+  push:
+    branches: [ 'cvrepro*' ]
   workflow_dispatch:
     inputs:
       duration:
@@ -21,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.runners) }}
+        os: ${{ fromJSON(inputs.runners || '["macos-15","macos-15","macos-15","macos-15"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,7 +38,7 @@ jobs:
       - name: Run
         working-directory: ci/macos-nfs-stall
         run: |
-          ./run-matrix.sh ${{ inputs.duration }}
+          ./run-matrix.sh ${{ inputs.duration || '5400' }}
           for f in out/*.log; do echo "::group::$f"; cat $f; echo "::endgroup::"; done
           grep -H . out/*.rc
           if grep -l STALL out/*.log; then
