@@ -1,0 +1,51 @@
+name: CI_MacOS_CVRepro
+
+# Lost-wakeup hunt for nfs4::RpcServer's job queue without cvmfs: runs
+# ci/macos-nfs-stall/cvrepro (the queue's mutex/condition-variable pattern plus
+# preemption, fork/spawn, signal and suspension stress) on hosted runners, to
+# tell a macOS psynch bug from something specific to the runner VMs.
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: Seconds per configuration
+        default: '5400'
+      runners:
+        description: JSON list of runner labels, one job each
+        default: '["macos-15","macos-15","macos-15","macos-15"]'
+
+jobs:
+  cvrepro:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.runners) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: ci/macos-nfs-stall
+      - name: Host
+        run: |
+          sw_vers; uname -a
+          sysctl hw.model machdep.cpu.brand_string hw.ncpu hw.memsize kern.hv_vmm_present 2>/dev/null || true
+      - name: Build
+        working-directory: ci/macos-nfs-stall
+        run: clang++ -std=c++17 -O2 -Wall -o cvrepro cvrepro.cc
+      - name: Run
+        working-directory: ci/macos-nfs-stall
+        run: |
+          ./run-matrix.sh ${{ inputs.duration }}
+          for f in out/*.log; do echo "::group::$f"; cat $f; echo "::endgroup::"; done
+          grep -H . out/*.rc
+          if grep -l STALL out/*.log; then
+            grep -h -A6 STALL out/*.log
+            echo "::error::cvrepro stalled"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cvrepro-${{ strategy.job-index }}
+          path: ci/macos-nfs-stall/out
