@@ -48,6 +48,8 @@ struct Options {
   int suspend_ms = 0;        // thread_suspend/resume a random worker, 0 = off
   qos_class_t worker_qos = QOS_CLASS_UNSPECIFIED;
   qos_class_t reader_qos = QOS_CLASS_UNSPECIFIED;
+  int max_depth = 64;        // readers back off above this, like a client
+                             // with a bounded number of outstanding calls
   int stall_ms = 3000;
   int duration_s = 0;        // 0 = forever
   int report_s = 60;
@@ -117,6 +119,7 @@ void Reader(int id) {
     for (int i = 0; i < burst; ++i) {
       {
         std::lock_guard<std::mutex> lock(queue_lock);
+        if (queue.size() >= static_cast<size_t>(g_opt.max_depth)) break;
         queue.push_back(Clock::now());
       }
       queue_cond.notify_one();
@@ -202,7 +205,7 @@ void Usage() {
           "cvrepro [--workers N] [--readers N] [--burst-max N] [--pause-us N]\n"
           "        [--work-us N] [--hogs N] [--fork-ms N] [--spawn-ms N]\n"
           "        [--signal-us N] [--suspend-ms N] [--worker-qos Q]\n"
-          "        [--reader-qos Q] [--stall-ms N] [--duration-s N] [--report-s N]\n");
+          "        [--reader-qos Q] [--max-depth N] [--stall-ms N] [--duration-s N] [--report-s N]\n");
   exit(2);
 }
 
@@ -225,6 +228,7 @@ int main(int argc, char **argv) {
     else if (a == "--suspend-ms") g_opt.suspend_ms = atoi(v);
     else if (a == "--worker-qos") g_opt.worker_qos = ParseQos(v);
     else if (a == "--reader-qos") g_opt.reader_qos = ParseQos(v);
+    else if (a == "--max-depth") g_opt.max_depth = atoi(v);
     else if (a == "--stall-ms") g_opt.stall_ms = atoi(v);
     else if (a == "--duration-s") g_opt.duration_s = atoi(v);
     else if (a == "--report-s") g_opt.report_s = atoi(v);
