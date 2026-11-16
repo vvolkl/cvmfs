@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Extension identity -->
+    <key>CFBundleIdentifier</key>
+    <string>org.cvmfs.fskit.extension</string>
+    <key>CFBundleExecutable</key>
+    <string>CvmfsFSKitExtension</string>
+    <key>CFBundleName</key>
+    <string>CvmfsFSKitExtension</string>
+    <key>CFBundlePackageType</key>
+    <string>XPC!</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <!-- FSKit extension attributes -->
+    <key>EXAppExtensionAttributes</key>
+    <dict>
+        <!-- Declares this extension as an FSKit filesystem module -->
+        <key>EXExtensionPointIdentifier</key>
+        <string>com.apple.fskit.fsmodule</string>
+
+        <!-- The personality name used with `mount -t cvmfs ...` -->
+        <key>FSShortName</key>
+        <string>cvmfs</string>
+
+        <!--
+            CVMFS is a network/pseudo-device filesystem mounted via
+            path URLs (the FQRN string), not a block device.
+        -->
+        <key>FSSupportsPathURLs</key>
+        <true/>
+        <key>FSSupportsBlockResources</key>
+        <false/>
+
+        <!-- Not a block-device filesystem, so no media types -->
+        <key>FSMediaTypes</key>
+        <dict/>
+
+        <!--
+            FSPersonalities: maps mount-type strings to this extension.
+            An empty dict means the FSShortName is the only personality.
+        -->
+        <key>FSPersonalities</key>
+        <dict/>
+
+        <!-- Mount options accepted by parseMountParams (see CvmfsExtension.swift) -->
+        <key>FSActivateOptionSyntax</key>
+        <dict>
+            <key>longOptions</key>
+            <array>
+                <string>config</string>
+                <string>fqrn</string>
+            </array>
+        </dict>
+    </dict>
+</dict>
+</plist>

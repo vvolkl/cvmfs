@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Application identity -->
+    <key>CFBundleIdentifier</key>
+    <string>org.cvmfs.host</string>
+    <key>CFBundleExecutable</key>
+    <string>CVMFS</string>
+    <key>CFBundleName</key>
+    <string>CVMFS</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+
+    <!--
+        NSPrincipalClass: required by AppKit even for apps that never open a
+        window; tells the OS which class to instantiate as NSApp.
+    -->
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <!--
+        LSUIElement = true: the host app is a background-only application.
+        It will not appear in the Dock or the Cmd-Tab switcher.
+    -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!--
+        Minimum macOS version. FSKit became a public API in macOS 15.4
+        (FSKIT_API_AVAILABILITY_V1).
+    -->
+    <key>LSMinimumSystemVersion</key>
+    <string>15.4</string>
+</dict>
+</plist>

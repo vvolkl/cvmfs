@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Required for all ExtensionKit extensions distributed via the App Store
+        or activated through pluginkit.
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!--
+        FSKit filesystem module entitlement.
+        Requires explicit provisioning profile approval from Apple;
+        see: https://developer.apple.com/documentation/fskit
+    -->
+    <key>com.apple.developer.fskit.fsmodule</key>
+    <true/>
+
+    <!--
+        Network client access — CVMFS fetches data from Stratum-1 HTTP servers.
+    -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

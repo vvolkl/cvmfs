@@ -168,12 +168,184 @@ target_link_libraries(CvmfsFSKitExtension PRIVATE
 )
 
 # ---------------------------------------------------------------------------
+# Host application — minimal macOS .app bundle that carries the extension
+# ---------------------------------------------------------------------------
+# macOS requires every filesystem extension (.appex) to live inside a regular
+# application bundle (.app).  CvmfsHostApp is that container: a background-only
+# app with no UI that is never launched interactively.  Its sole purpose is to
+# give the OS a well-formed bundle from which pluginkit can discover and
+# activate CvmfsFSKitExtension.
+# ---------------------------------------------------------------------------
+add_executable(CvmfsHostApp
+    "${CMAKE_CURRENT_SOURCE_DIR}/app/main.swift"
+)
+
+set_target_properties(CvmfsHostApp PROPERTIES
+    MACOSX_BUNDLE                TRUE
+    OUTPUT_NAME                  "CVMFS"
+    # Place the binary at the build-tree root so that the assembled CVMFS.app
+    # ends up at <build_dir>/CVMFS.app — easy to find and sign.
+    RUNTIME_OUTPUT_DIRECTORY     "${CMAKE_BINARY_DIR}"
+    MACOSX_BUNDLE_INFO_PLIST     "${CMAKE_CURRENT_SOURCE_DIR}/app/CVMFS-Info.plist"
+
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "org.cvmfs.host"
+    XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/app/CVMFS.entitlements"
+    XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME   YES
+    XCODE_ATTRIBUTE_MACOSX_DEPLOYMENT_TARGET  "15.4"
+)
+
+target_compile_options(CvmfsHostApp PRIVATE
+    $<$<COMPILE_LANGUAGE:Swift>:-target;${_FSKIT_ARCH}-apple-macos15.4>
+)
+
+target_link_libraries(CvmfsHostApp PRIVATE
+    ${FOUNDATION_LIB}
+)
+
+# ---------------------------------------------------------------------------
+# Bundle directory assembly for non-Xcode generators (Ninja, make)
+# ---------------------------------------------------------------------------
+# The Xcode generator creates .appex / .app bundle directories automatically
+# during the build.  Ninja and make build flat binaries only; we wrap them in
+# the expected bundle layout with explicit post-build steps.
+# ---------------------------------------------------------------------------
+if (NOT CMAKE_GENERATOR MATCHES "Xcode")
+
+    # Paths used by both the post-build steps and the cvmfs_app target below.
+    set(_APPEX_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/CvmfsFSKitExtension.appex")
+    set(_APP_BUILD_DIR   "${CMAKE_BINARY_DIR}/CVMFS.app")
+
+    # --- CvmfsFSKitExtension.appex ---
+    add_custom_command(TARGET CvmfsFSKitExtension POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${_APPEX_BUILD_DIR}/Contents/MacOS"
+        COMMAND ${CMAKE_COMMAND} -E copy
+            "$<TARGET_FILE:CvmfsFSKitExtension>"
+            "${_APPEX_BUILD_DIR}/Contents/MacOS/$<TARGET_FILE_NAME:CvmfsFSKitExtension>"
+        COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist"
+            "${_APPEX_BUILD_DIR}/Contents/Info.plist"
+        COMMENT "Assembling CvmfsFSKitExtension.appex"
+        VERBATIM
+    )
+
+    # --- CVMFS.app (host binary + Info.plist only; extension added by cvmfs_app) ---
+    add_custom_command(TARGET CvmfsHostApp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${_APP_BUILD_DIR}/Contents/MacOS"
+        COMMAND ${CMAKE_COMMAND} -E copy
+            "$<TARGET_FILE:CvmfsHostApp>"
+            "${_APP_BUILD_DIR}/Contents/MacOS/$<TARGET_FILE_NAME:CvmfsHostApp>"
+        COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_CURRENT_SOURCE_DIR}/app/CVMFS-Info.plist"
+            "${_APP_BUILD_DIR}/Contents/Info.plist"
+        COMMENT "Assembling CVMFS.app host bundle"
+        VERBATIM
+    )
+
+else ()
+
+    # Under Xcode, TARGET_BUNDLE_DIR gives the real bundle directory.
+    set(_APPEX_BUILD_DIR "$<TARGET_BUNDLE_DIR:CvmfsFSKitExtension>")
+    set(_APP_BUILD_DIR   "$<TARGET_BUNDLE_DIR:CvmfsHostApp>")
+
+endif ()
+
+# ---------------------------------------------------------------------------
+# cvmfs_app — embed the extension into CVMFS.app
+# ---------------------------------------------------------------------------
+# Building this target produces a self-contained CVMFS.app in the build tree
+# that is ready to be code-signed and registered with pluginkit.
+#
+#   ninja cvmfs_app
+#
+# The assembled bundle lives at:
+#   <build_dir>/CVMFS.app/Contents/
+#     Info.plist
+#     MacOS/CVMFS
+#     PlugIns/CvmfsFSKitExtension.appex/
+#       Contents/
+#         Info.plist
+#         MacOS/CvmfsFSKitExtension
+# ---------------------------------------------------------------------------
+add_custom_target(cvmfs_app
+    DEPENDS CvmfsFSKitExtension CvmfsHostApp
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "${_APP_BUILD_DIR}/Contents/PlugIns"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${_APPEX_BUILD_DIR}"
+        "${_APP_BUILD_DIR}/Contents/PlugIns/CvmfsFSKitExtension.appex"
+    COMMENT "Embedding CvmfsFSKitExtension.appex into CVMFS.app"
+    VERBATIM
+)
+
+# ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-# The .appex is installed into a standard location; it still needs to be
-# embedded in a host .app bundle before it can be activated by the OS.
-install(
-    TARGETS     CvmfsFSKitExtension
-    BUNDLE
-    DESTINATION "${CMAKE_INSTALL_PREFIX}/libexec/cvmfs"
+# CVMFS_APP_INSTALL_DIR: parent directory for CVMFS.app.  Defaults to
+# /Applications regardless of CMAKE_INSTALL_PREFIX because macOS app bundles
+# must be in a well-known, user-accessible location for pluginkit to discover
+# and register the extension.
+# ---------------------------------------------------------------------------
+set(CVMFS_APP_INSTALL_DIR "/Applications" CACHE PATH
+    "Directory where CVMFS.app is installed (default: /Applications)")
+
+set(_INST_APP    "${CVMFS_APP_INSTALL_DIR}/CVMFS.app")
+set(_INST_APPEX  "${_INST_APP}/Contents/PlugIns/CvmfsFSKitExtension.appex")
+
+# Host app binary.
+# RUNTIME destination: used by Ninja/make (flat binary).
+# BUNDLE  destination: used by Xcode (whole .app directory).
+install(TARGETS CvmfsHostApp
+    RUNTIME DESTINATION "${_INST_APP}/Contents/MacOS"
+    BUNDLE  DESTINATION "${CVMFS_APP_INSTALL_DIR}"
 )
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/app/CVMFS-Info.plist"
+    DESTINATION "${_INST_APP}/Contents"
+    RENAME Info.plist
+)
+
+# Extension binary (embedded inside the host app's PlugIns directory).
+install(TARGETS CvmfsFSKitExtension
+    RUNTIME DESTINATION "${_INST_APPEX}/Contents/MacOS"
+    BUNDLE  DESTINATION "${_INST_APP}/Contents/PlugIns"
+)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist"
+    DESTINATION "${_INST_APPEX}/Contents"
+    RENAME Info.plist
+)
+
+# Post-install instructions printed at the end of `ninja install`.
+install(CODE "
+message(STATUS \"\")
+message(STATUS \"╔══════════════════════════════════════════════════════════════╗\")
+message(STATUS \"║  CVMFS.app installed to ${CVMFS_APP_INSTALL_DIR}            \")
+message(STATUS \"╚══════════════════════════════════════════════════════════════╝\")
+message(STATUS \"\")
+message(STATUS \"Next steps:\")
+message(STATUS \"\")
+message(STATUS \"1. Code-sign both bundles (requires Developer ID + fskit entitlement):\")
+message(STATUS \"\")
+message(STATUS \"   codesign --force --sign 'Developer ID Application: Your Name (TEAMID)' \\\\\" )
+message(STATUS \"     --entitlements ${CMAKE_CURRENT_SOURCE_DIR}/CvmfsFSKitExtension.entitlements \\\\\" )
+message(STATUS \"     --options runtime \\\\\" )
+message(STATUS \"     '${_INST_APPEX}'\")
+message(STATUS \"\")
+message(STATUS \"   codesign --force --sign 'Developer ID Application: Your Name (TEAMID)' \\\\\" )
+message(STATUS \"     --entitlements ${CMAKE_CURRENT_SOURCE_DIR}/app/CVMFS.entitlements \\\\\" )
+message(STATUS \"     --options runtime \\\\\" )
+message(STATUS \"     '${_INST_APP}'\")
+message(STATUS \"\")
+message(STATUS \"2. Register with pluginkit (run as the target user, not root):\")
+message(STATUS \"   pluginkit -a '${_INST_APP}'\")
+message(STATUS \"\")
+message(STATUS \"3. Approve in System Settings → Privacy & Security → Extensions\")
+message(STATUS \"\")
+message(STATUS \"4. Activate the cvmfs filesystem personality:\")
+message(STATUS \"   pluginkit -e use -i org.cvmfs.fskit.extension\")
+message(STATUS \"\")
+message(STATUS \"5. Mount a repository:\")
+message(STATUS \"   sudo mount -t cvmfs atlas.cern.ch /cvmfs/atlas.cern.ch\")
+message(STATUS \"\")
+")
