@@ -4,9 +4,10 @@
 // between a waiter's user-space sequence bump and its kernel block (prepost):
 // oversubscription, low worker QoS, fork/posix_spawn, signals, suspension.
 //
-// A stall is reported when the oldest queued job is older than --stall-ms while
-// at least one worker is idle in the wait. The raw pthread_cond_t words are
-// printed, then a broadcast is tried and the words are printed again.
+// A stall is reported when the oldest queued job is older than --stall-ms, a
+// worker is idle in the wait, and the cv words match the stalled server (L > S,
+// L == U). The words are printed, then a broadcast is tried and they are
+// printed again. Without that signature the delay is logged as starvation.
 
 #include <mach/mach.h>
 #include <pthread.h>
@@ -62,18 +63,46 @@ std::deque<Clock::time_point> queue;
 std::atomic<bool> stopping(false);
 std::atomic<int> idle_workers(0);
 std::atomic<uint64_t> n_push(0), n_pop(0), n_wait(0), n_sig(0), n_fork(0);
+uint64_t n_starved = 0;
 std::vector<pthread_t> worker_threads;
 std::vector<mach_port_t> worker_ports;
 std::mutex worker_threads_lock;
 
-void DumpCond(const char *label) {
-  const unsigned char *p =
-      reinterpret_cast<const unsigned char *>(queue_cond.native_handle());
+// libpthread's _pthread_cond: sig (8 bytes), lock, flags (misalign bit 29),
+// busy mutex pointer, c_seq[3]. Aligned: c_seq = L, S, U; misaligned: U, L, S.
+// L = waits started, S = waits completed, U = waiters signalled, in units of
+// 0x100; the low byte holds flags.
+struct CondSeq {
+  uint32_t l, s, u;
+  uint64_t busy;
+  static int Diff(uint32_t a, uint32_t b) {
+    return static_cast<int>(((a & ~0xffu) - (b & ~0xffu)) >> 8);
+  }
+  int waiting() const { return Diff(l, s); }
+  int unsignalled() const { return Diff(l, u); }
+};
+
+CondSeq ReadCond() {
   uint32_t w[12];
-  memcpy(w, p, sizeof(w));
+  memcpy(w, queue_cond.native_handle(), sizeof(w));
+  CondSeq c;
+  memcpy(&c.busy, &w[4], sizeof(c.busy));
+  if (w[3] & (1u << 29)) {
+    c.u = w[6]; c.l = w[7]; c.s = w[8];
+  } else {
+    c.l = w[6]; c.s = w[7]; c.u = w[8];
+  }
+  return c;
+}
+
+void DumpCond(const char *label) {
+  uint32_t w[12];
+  memcpy(w, queue_cond.native_handle(), sizeof(w));
+  const CondSeq c = ReadCond();
   fprintf(stderr, "%s cv words:", label);
   for (int i = 0; i < 12; ++i) fprintf(stderr, " %08x", w[i]);
-  fprintf(stderr, "\n");
+  fprintf(stderr, "\n  L %08x S %08x U %08x busy %llx: waiting %d unsignalled %d\n",
+          c.l, c.s, c.u, (unsigned long long)c.busy, c.waiting(), c.unsignalled());
 }
 
 void Spin(int us) {
@@ -253,6 +282,7 @@ int main(int argc, char **argv) {
 
   const Clock::time_point start = Clock::now();
   Clock::time_point last_report = start;
+  Clock::time_point quiet_until = start;
   int rc = 0;
   while (true) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -266,15 +296,27 @@ int main(int argc, char **argv) {
         age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                      now - queue.front()).count();
     }
-    if (depth > 0 && age_ms >= g_opt.stall_ms && idle_workers > 0) {
+    // The stalled server's signature: sleepers still in the kernel (L > S)
+    // although user space counts all of them as signalled (L == U). Woken
+    // workers that are merely starved of CPU show L == S instead.
+    if (depth > 0 && age_ms >= g_opt.stall_ms && idle_workers > 0 &&
+        now >= quiet_until) {
+      const CondSeq c = ReadCond();
+      const bool lost = c.waiting() > 0 && c.unsignalled() == 0;
       fprintf(stderr,
-              "STALL after %.0f s: depth %zu, oldest %ld ms, idle workers %d, "
+              "%s after %.0f s: depth %zu, oldest %ld ms, idle workers %d, "
               "push %llu pop %llu wait %llu sig %llu fork %llu\n",
+              lost ? "STALL" : "starved (not a lost wakeup)",
               std::chrono::duration<double>(now - start).count(), depth, age_ms,
               idle_workers.load(), (unsigned long long)n_push.load(),
               (unsigned long long)n_pop.load(), (unsigned long long)n_wait.load(),
               (unsigned long long)n_sig.load(), (unsigned long long)n_fork.load());
-      DumpCond("stalled");
+      DumpCond(lost ? "stalled" : "starved");
+      if (!lost) {
+        n_starved++;
+        quiet_until = now + std::chrono::seconds(30);
+        continue;
+      }
       std::this_thread::sleep_for(std::chrono::seconds(2));
       DumpCond("stalled+2s");
       const uint64_t pop0 = n_pop;
@@ -289,11 +331,11 @@ int main(int argc, char **argv) {
     }
     if (std::chrono::duration_cast<std::chrono::seconds>(now - last_report)
             .count() >= g_opt.report_s) {
-      fprintf(stderr, "%.0f s: push %llu pop %llu wait %llu sig %llu fork %llu depth %zu\n",
+      fprintf(stderr, "%.0f s: push %llu pop %llu wait %llu sig %llu fork %llu depth %zu starved %llu\n",
               std::chrono::duration<double>(now - start).count(),
               (unsigned long long)n_push.load(), (unsigned long long)n_pop.load(),
               (unsigned long long)n_wait.load(), (unsigned long long)n_sig.load(),
-              (unsigned long long)n_fork.load(), depth);
+              (unsigned long long)n_fork.load(), depth, (unsigned long long)n_starved);
       last_report = now;
     }
     if (g_opt.duration_s > 0 &&
