@@ -6,7 +6,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <memory>
+
+#include "object_fetcher.h"
 #include "reflog.h"
+#include "server_tool.h"
 #include "testutil.h"
 #include "util/platform.h"
 #include "util/posix.h"
@@ -161,6 +165,116 @@ TEST(T_Reflog, ChecksumWriteFailure) {
   content_hash.Randomize();
   EXPECT_FALSE(manifest::Reflog::WriteChecksum(
       "./no_such_dir/reflog.chksum", content_hash));
+}
+
+
+TEST(T_Reflog, ChecksumPrepareCommit) {
+  const std::string path = "./reflog_2pc.chksum";
+  const std::string pending = manifest::Reflog::PendingChecksumPath(path);
+  shash::Any committed(shash::kSha1);
+  committed.Randomize();
+  ASSERT_TRUE(manifest::Reflog::WriteChecksum(path, committed));
+  EXPECT_FALSE(FileExists(pending));
+
+  shash::Any staged(shash::kSha1);
+  staged.Randomize();
+  ASSERT_TRUE(manifest::Reflog::PrepareChecksum(path, staged));
+  shash::Any read_hash;
+  EXPECT_TRUE(manifest::Reflog::ReadChecksum(path, &read_hash));
+  EXPECT_EQ(committed, read_hash);
+
+  ASSERT_TRUE(manifest::Reflog::CommitChecksum(path));
+  EXPECT_TRUE(manifest::Reflog::ReadChecksum(path, &read_hash));
+  EXPECT_EQ(staged, read_hash);
+  EXPECT_FALSE(FileExists(pending));
+  EXPECT_FALSE(manifest::Reflog::CommitChecksum(path));
+  unlink(path.c_str());
+}
+
+
+class T_ReflogRecovery : public ::testing::Test {
+ protected:
+  T_ReflogRecovery()
+      : sandbox_(GetCurrentWorkingDirectory() + "/cvmfs_ut_reflog_recovery")
+      , backend_(sandbox_ + "/backend")
+      , temp_dir_(sandbox_ + "/tmp")
+      , chksum_path_(sandbox_ + "/reflog.chksum") { }
+
+  virtual void SetUp() {
+    ASSERT_TRUE(MkdirDeep(backend_, 0700) && MkdirDeep(temp_dir_, 0700));
+    const std::string reflog_path = backend_ + "/.cvmfsreflog";
+    std::unique_ptr<manifest::Reflog> reflog(
+        manifest::Reflog::Create(reflog_path, "test.cern.ch"));
+    ASSERT_TRUE(reflog.get() != NULL);
+    reflog.reset();
+    remote_hash_ = shash::Any(shash::kSha1);
+    manifest::Reflog::HashDatabase(reflog_path, &remote_hash_);
+    stale_hash_ = shash::Any(shash::kSha1);
+    stale_hash_.Randomize();
+  }
+
+  virtual void TearDown() { ASSERT_TRUE(RemoveTree(sandbox_)); }
+
+  manifest::Reflog *Fetch(shash::Any *hash) {
+    LocalObjectFetcher<> fetcher(backend_, temp_dir_);
+    return server_tool_.FetchReflog(&fetcher, "test.cern.ch", chksum_path_,
+                                    hash);
+  }
+
+  const std::string sandbox_;
+  const std::string backend_;
+  const std::string temp_dir_;
+  const std::string chksum_path_;
+  shash::Any remote_hash_;
+  shash::Any stale_hash_;
+  ServerTool server_tool_;
+};
+
+
+TEST_F(T_ReflogRecovery, CommitsPendingChecksum) {
+  // State after a run that uploaded the reflog but did not commit
+  ASSERT_TRUE(manifest::Reflog::WriteChecksum(chksum_path_, stale_hash_));
+  ASSERT_TRUE(manifest::Reflog::PrepareChecksum(chksum_path_, remote_hash_));
+
+  shash::Any hash = stale_hash_;
+  std::unique_ptr<manifest::Reflog> reflog(Fetch(&hash));
+  ASSERT_TRUE(reflog.get() != NULL);
+  EXPECT_EQ(remote_hash_, hash);
+  shash::Any read_hash;
+  EXPECT_TRUE(manifest::Reflog::ReadChecksum(chksum_path_, &read_hash));
+  EXPECT_EQ(remote_hash_, read_hash);
+  EXPECT_FALSE(
+      FileExists(manifest::Reflog::PendingChecksumPath(chksum_path_)));
+}
+
+
+TEST_F(T_ReflogRecovery, KeepsStalePendingChecksum) {
+  // State after a run that failed before or during the upload
+  ASSERT_TRUE(manifest::Reflog::WriteChecksum(chksum_path_, remote_hash_));
+  ASSERT_TRUE(manifest::Reflog::PrepareChecksum(chksum_path_, stale_hash_));
+
+  shash::Any hash = remote_hash_;
+  std::unique_ptr<manifest::Reflog> reflog(Fetch(&hash));
+  ASSERT_TRUE(reflog.get() != NULL);
+  EXPECT_EQ(remote_hash_, hash);
+  shash::Any read_hash;
+  EXPECT_TRUE(manifest::Reflog::ReadChecksum(chksum_path_, &read_hash));
+  EXPECT_EQ(remote_hash_, read_hash);
+}
+
+
+TEST_F(T_ReflogRecovery, RejectsMismatch) {
+  shash::Any other_hash(shash::kSha1);
+  other_hash.Randomize();
+  ASSERT_TRUE(manifest::Reflog::WriteChecksum(chksum_path_, stale_hash_));
+  ASSERT_TRUE(manifest::Reflog::PrepareChecksum(chksum_path_, other_hash));
+
+  shash::Any hash = stale_hash_;
+  EXPECT_EQ(NULL, Fetch(&hash));
+  EXPECT_EQ(stale_hash_, hash);
+  shash::Any read_hash;
+  EXPECT_TRUE(manifest::Reflog::ReadChecksum(chksum_path_, &read_hash));
+  EXPECT_EQ(stale_hash_, read_hash);
 }
 
 

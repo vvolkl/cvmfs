@@ -88,8 +88,13 @@ SigningTool::Result SigningTool::Run(
 
   std::unique_ptr<manifest::Reflog> reflog;
   if (!reflog_hash.IsNull()) {
-    reflog.reset(
-        server_tool_->FetchReflog(&object_fetcher, repo_name, reflog_hash));
+    if (reflog_chksum_path.empty()) {
+      reflog.reset(
+          server_tool_->FetchReflog(&object_fetcher, repo_name, reflog_hash));
+    } else {
+      reflog.reset(server_tool_->FetchReflog(&object_fetcher, repo_name,
+                                             reflog_chksum_path, &reflog_hash));
+    }
     if (reflog.get() == nullptr) {
       LogCvmfs(kLogCvmfs, kLogStderr, "reflog missing");
       return kReflogMissing;
@@ -181,10 +186,16 @@ SigningTool::Result SigningTool::Run(
     reflog->DropDatabaseFileOwnership();
     const std::string reflog_db_file = reflog->database_file();
     reflog.reset();
-    spooler->UploadReflog(reflog_db_file);
-    spooler->WaitForUpload();
     reflog_hash.algorithm = manifest->GetHashAlgorithm();
     manifest::Reflog::HashDatabase(reflog_db_file, &reflog_hash);
+    if (!reflog_chksum_path.empty()
+        && !manifest::Reflog::PrepareChecksum(reflog_chksum_path,
+                                              reflog_hash)) {
+      unlink(reflog_db_file.c_str());
+      return kError;
+    }
+    spooler->UploadReflog(reflog_db_file);
+    spooler->WaitForUpload();
     unlink(reflog_db_file.c_str());
     if (spooler->GetNumberOfErrors()) {
       LogCvmfs(kLogCvmfs, kLogStderr, "Failed to upload Reflog (errors: %d)",
@@ -192,7 +203,7 @@ SigningTool::Result SigningTool::Run(
       return kError;
     }
     if (!reflog_chksum_path.empty()
-        && !manifest::Reflog::WriteChecksum(reflog_chksum_path, reflog_hash)) {
+        && !manifest::Reflog::CommitChecksum(reflog_chksum_path)) {
       return kError;
     }
   }

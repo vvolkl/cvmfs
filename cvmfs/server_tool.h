@@ -38,6 +38,17 @@ class ServerTool {
   manifest::Reflog *FetchReflog(ObjectFetcherT *object_fetcher,
                                 const std::string &repo_name,
                                 const shash::Any &reflog_hash);
+  /**
+   * Fetches the reflog for the checksum stored in chksum_path. If the remote
+   * reflog does not match it but matches a pending checksum left behind by an
+   * interrupted run, the pending checksum is committed and stored in
+   * reflog_hash.
+   */
+  template<class ObjectFetcherT>
+  manifest::Reflog *FetchReflog(ObjectFetcherT *object_fetcher,
+                                const std::string &repo_name,
+                                const std::string &chksum_path,
+                                shash::Any *reflog_hash);
 
   manifest::Reflog *CreateEmptyReflog(const std::string &temp_directory,
                                       const std::string &repo_name);

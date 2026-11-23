@@ -66,24 +66,26 @@ bool Reflog::ReadChecksum(const std::string &path, shash::Any *checksum) {
 }
 
 
+namespace {
+
 /**
- * Replaces the checksum file atomically. Truncating in place would leave an
- * empty file behind if the file system is full (ENOSPC on write), which breaks
- * the next publish or snapshot.
+ * Writes content to a temporary file, fsyncs it and renames it to target, so
+ * target is never left truncated if the file system is full. Mode and owner
+ * are taken from attr_source if it exists: other tools (e.g. running as the
+ * repository owner) may need to rewrite it.
  */
-bool Reflog::WriteChecksum(const std::string &path, const shash::Any &value) {
-  const std::string hex_hash = value.ToString();
-  std::string tmp_path = path + ".XXXXXX";
+bool WriteFileAtomically(const std::string &target,
+                         const std::string &attr_source,
+                         const std::string &content) {
+  std::string tmp_path = target + ".XXXXXX";
   const char *step = NULL;
   const int fd = mkstemp(&tmp_path[0]);
   if (fd < 0) {
     step = "create";
   } else {
-    // Keep the mode and owner of an existing file: other tools (e.g. running
-    // as the repository owner) may need to rewrite it.
     int mode = kDefaultFileMode;
     platform_stat64 info;
-    const bool has_old = (platform_stat(path.c_str(), &info) == 0);
+    const bool has_old = (platform_stat(attr_source.c_str(), &info) == 0);
     if (has_old)
       mode = info.st_mode & 0777;
 
@@ -92,7 +94,7 @@ bool Reflog::WriteChecksum(const std::string &path, const shash::Any &value) {
     } else if (has_old && (geteuid() == 0)
                && (fchown(fd, info.st_uid, info.st_gid) != 0)) {
       step = "chown";
-    } else if (!SafeWrite(fd, hex_hash.data(), hex_hash.length())) {
+    } else if (!SafeWrite(fd, content.data(), content.length())) {
       step = "write";
     } else if (fsync(fd) != 0) {
       step = "fsync";
@@ -102,7 +104,7 @@ bool Reflog::WriteChecksum(const std::string &path, const shash::Any &value) {
       step = "close";
     else
       errno = saved_errno;
-    if ((step == NULL) && (rename(tmp_path.c_str(), path.c_str()) != 0))
+    if ((step == NULL) && (rename(tmp_path.c_str(), target.c_str()) != 0))
       step = "rename";
   }
 
@@ -110,13 +112,40 @@ bool Reflog::WriteChecksum(const std::string &path, const shash::Any &value) {
     const int saved_errno = errno;
     if (fd >= 0)
       unlink(tmp_path.c_str());
-    LogCvmfs(kLogReflog, kLogStderr,
-             "failed to write reflog checksum %s (%s: %d - %s); once fixed, "
-             "run `cvmfs_server check -r` to resync it",
-             path.c_str(), step, saved_errno, strerror(saved_errno));
+    LogCvmfs(kLogReflog, kLogStderr, "failed to write %s (%s: %d - %s)",
+             target.c_str(), step, saved_errno, strerror(saved_errno));
     return false;
   }
   return true;
+}
+
+}  // anonymous namespace
+
+
+std::string Reflog::PendingChecksumPath(const std::string &path) {
+  return path + ".pending";
+}
+
+
+bool Reflog::PrepareChecksum(const std::string &path, const shash::Any &value) {
+  return WriteFileAtomically(PendingChecksumPath(path), path, value.ToString());
+}
+
+
+bool Reflog::CommitChecksum(const std::string &path) {
+  const std::string pending = PendingChecksumPath(path);
+  if (rename(pending.c_str(), path.c_str()) != 0) {
+    LogCvmfs(kLogReflog, kLogStderr,
+             "failed to commit reflog checksum %s (%d - %s)", pending.c_str(),
+             errno, strerror(errno));
+    return false;
+  }
+  return true;
+}
+
+
+bool Reflog::WriteChecksum(const std::string &path, const shash::Any &value) {
+  return PrepareChecksum(path, value) && CommitChecksum(path);
 }
 
 

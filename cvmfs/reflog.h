@@ -44,6 +44,19 @@ class Reflog {
                            shash::Any *hash_reflog);
 
   static bool ReadChecksum(const std::string &path, shash::Any *checksum);
+  /**
+   * The checksum file is updated in two phases around the reflog upload:
+   * PrepareChecksum() before (stores the new checksum in a .pending file next
+   * to it), CommitChecksum() after (renames it into place). If a run fails in
+   * between, the uploaded reflog matches the pending checksum and
+   * ServerTool::FetchReflog() commits it on the next run.
+   */
+  static std::string PendingChecksumPath(const std::string &path);
+  static bool PrepareChecksum(const std::string &path, const shash::Any &value);
+  static bool CommitChecksum(const std::string &path);
+  /**
+   * Prepare and commit in one go, for when no reflog exists yet
+   */
   static bool WriteChecksum(const std::string &path, const shash::Any &value);
 
   bool AddCertificate(const shash::Any &certificate);

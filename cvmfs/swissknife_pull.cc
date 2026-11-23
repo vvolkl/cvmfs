@@ -782,7 +782,7 @@ int swissknife::CommandPull::Main(const swissknife::ArgumentList &args) {
 
       if (!reflog_hash.IsNull()) {
         reflog = FetchReflog(&object_fetcher_stratum1, repository_name,
-                             reflog_hash);
+                             reflog_chksum_path, &reflog_hash);
         if (reflog == NULL)
           goto fini;
       } else {
@@ -997,6 +997,11 @@ int swissknife::CommandPull::Main(const swissknife::ArgumentList &args) {
       const string reflog_path = reflog->database_file();
       delete reflog;
       manifest::Reflog::HashDatabase(reflog_path, &reflog_hash);
+      assert(!reflog_chksum_path.empty());
+      if (!manifest::Reflog::PrepareChecksum(reflog_chksum_path, reflog_hash)) {
+        unlink(reflog_path.c_str());
+        goto fini;
+      }
       WaitForStorage();  // Reduce the duration of reflog /wo checksum
       spooler->UploadReflog(reflog_path);
       spooler->WaitForUpload();
@@ -1006,8 +1011,7 @@ int swissknife::CommandPull::Main(const swissknife::ArgumentList &args) {
                  spooler->GetNumberOfErrors());
         goto fini;
       }
-      assert(!reflog_chksum_path.empty());
-      if (!manifest::Reflog::WriteChecksum(reflog_chksum_path, reflog_hash))
+      if (!manifest::Reflog::CommitChecksum(reflog_chksum_path))
         goto fini;
     }
 

@@ -150,8 +150,10 @@ int CommandGc::Main(const ArgumentList &args) {
   }
 
   std::unique_ptr<manifest::Reflog> reflog;
-  reflog.reset(FetchReflog(&object_fetcher, repo_name, reflog_hash));
-  assert(reflog.get() != nullptr);
+  reflog.reset(FetchReflog(&object_fetcher, repo_name, reflog_chksum_path,
+                           &reflog_hash));
+  if (reflog.get() == nullptr)
+    return 1;
 
   const upload::SpoolerDefinition spooler_definition(spooler, shash::kAny);
   const std::unique_ptr<upload::AbstractUploader> uploader(
@@ -269,15 +271,18 @@ int CommandGc::Main(const ArgumentList &args) {
 
   bool reflog_ok = true;
   if (!dry_run) {
-    uploader->UploadFile(reflog_db, ".cvmfsreflog");
     manifest::Reflog::HashDatabase(reflog_db, &reflog_hash);
+    reflog_ok = manifest::Reflog::PrepareChecksum(reflog_chksum_path,
+                                                  reflog_hash);
+  }
+  if (!dry_run && reflog_ok) {
+    uploader->UploadFile(reflog_db, ".cvmfsreflog");
     uploader->WaitForUpload();
     if (uploader->GetNumberOfErrors() > 0) {
       LogCvmfs(kLogCvmfs, kLogStderr, "failed to upload updated Reflog");
       reflog_ok = false;
     } else {
-      reflog_ok = manifest::Reflog::WriteChecksum(reflog_chksum_path,
-                                                  reflog_hash);
+      reflog_ok = manifest::Reflog::CommitChecksum(reflog_chksum_path);
     }
   }
 

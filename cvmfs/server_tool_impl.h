@@ -49,4 +49,37 @@ manifest::Reflog *ServerTool::FetchReflog(ObjectFetcherT *object_fetcher,
   return reflog;
 }
 
+template<class ObjectFetcherT>
+manifest::Reflog *ServerTool::FetchReflog(ObjectFetcherT *object_fetcher,
+                                          const std::string &repo_name,
+                                          const std::string &chksum_path,
+                                          shash::Any *reflog_hash) {
+  manifest::Reflog *reflog = NULL;
+  if (object_fetcher->FetchReflog(*reflog_hash, &reflog)
+      == ObjectFetcherT::kFailOk) {
+    return reflog;
+  }
+
+  shash::Any pending_hash;
+  const std::string pending_path = manifest::Reflog::PendingChecksumPath(
+      chksum_path);
+  if (manifest::Reflog::ReadChecksum(pending_path, &pending_hash)
+      && !pending_hash.IsNull() && (pending_hash != *reflog_hash)
+      && (object_fetcher->FetchReflog(pending_hash, &reflog)
+          == ObjectFetcherT::kFailOk)) {
+    if (!manifest::Reflog::CommitChecksum(chksum_path)) {
+      delete reflog;
+      return NULL;
+    }
+    LogCvmfs(kLogCvmfs, kLogStdout,
+             "Recovered reflog checksum %s of an interrupted update",
+             pending_hash.ToString().c_str());
+    *reflog_hash = pending_hash;
+    return reflog;
+  }
+
+  // Fetch again to report the original failure
+  return FetchReflog(object_fetcher, repo_name, *reflog_hash);
+}
+
 #endif  // CVMFS_SERVER_TOOL_IMPL_H_
