@@ -783,7 +783,8 @@ int swissknife::CommandPull::Main(const swissknife::ArgumentList &args) {
       if (!reflog_hash.IsNull()) {
         reflog = FetchReflog(&object_fetcher_stratum1, repository_name,
                              reflog_hash);
-        assert(reflog != NULL);
+        if (reflog == NULL)
+          goto fini;
       } else {
         LogCvmfs(kLogCvmfs, kLogVerboseMsg, "no reflog (ignoring)");
         if (spooler->Peek(".cvmfsreflog")) {
@@ -1006,7 +1007,8 @@ int swissknife::CommandPull::Main(const swissknife::ArgumentList &args) {
         goto fini;
       }
       assert(!reflog_chksum_path.empty());
-      manifest::Reflog::WriteChecksum(reflog_chksum_path, reflog_hash);
+      if (!manifest::Reflog::WriteChecksum(reflog_chksum_path, reflog_hash))
+        goto fini;
     }
 
     if (preload_cache) {

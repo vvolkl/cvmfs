@@ -139,7 +139,8 @@ int CommandReconstructReflog::Main(const ArgumentList &args) {
 
   uploader->TearDown();
 
-  manifest::Reflog::WriteChecksum(reflog_chksum_path, reflog_hash);
+  if (!manifest::Reflog::WriteChecksum(reflog_chksum_path, reflog_hash))
+    return 1;
 
   return (errors == 0) ? 0 : 1;
 }

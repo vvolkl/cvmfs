@@ -191,8 +191,10 @@ SigningTool::Result SigningTool::Run(
                spooler->GetNumberOfErrors());
       return kError;
     }
-    if (!reflog_chksum_path.empty())
-      manifest::Reflog::WriteChecksum(reflog_chksum_path, reflog_hash);
+    if (!reflog_chksum_path.empty()
+        && !manifest::Reflog::WriteChecksum(reflog_chksum_path, reflog_hash)) {
+      return kError;
+    }
   }
 
   // Don't activate new manifest, just make sure all its references are uploaded

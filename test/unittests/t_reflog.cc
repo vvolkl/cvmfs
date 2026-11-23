@@ -3,9 +3,13 @@
  */
 
 #include <gtest/gtest.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "reflog.h"
 #include "testutil.h"
+#include "util/platform.h"
+#include "util/posix.h"
 
 template<class ReflogT>
 class T_Reflog : public ::testing::Test {
@@ -127,6 +131,36 @@ TEST(T_Reflog, Checksum) {
   shash::Any read_hash;
   EXPECT_TRUE(manifest::Reflog::ReadChecksum("./reflog.chksum", &read_hash));
   EXPECT_EQ(content_hash, read_hash);
+}
+
+
+TEST(T_Reflog, ChecksumReplace) {
+  const std::string path = "./reflog_replace.chksum";
+  shash::Any first(shash::kSha1);
+  first.Randomize();
+  ASSERT_TRUE(manifest::Reflog::WriteChecksum(path, first));
+  ASSERT_EQ(0, chmod(path.c_str(), 0640));
+
+  shash::Any second(shash::kSha1);
+  second.Randomize();
+  ASSERT_TRUE(manifest::Reflog::WriteChecksum(path, second));
+  shash::Any read_hash;
+  EXPECT_TRUE(manifest::Reflog::ReadChecksum(path, &read_hash));
+  EXPECT_EQ(second, read_hash);
+
+  platform_stat64 info;
+  ASSERT_EQ(0, platform_stat(path.c_str(), &info));
+  EXPECT_EQ(0640, info.st_mode & 0777);
+  EXPECT_TRUE(FindFilesByPrefix(".", "reflog_replace.chksum.").empty());
+  unlink(path.c_str());
+}
+
+
+TEST(T_Reflog, ChecksumWriteFailure) {
+  shash::Any content_hash(shash::kSha1);
+  content_hash.Randomize();
+  EXPECT_FALSE(manifest::Reflog::WriteChecksum(
+      "./no_such_dir/reflog.chksum", content_hash));
 }
 
 

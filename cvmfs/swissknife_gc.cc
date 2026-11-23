@@ -267,18 +267,23 @@ int CommandGc::Main(const ArgumentList &args) {
   const std::string reflog_db = reflog->database_file();
   reflog.reset();
 
+  bool reflog_ok = true;
   if (!dry_run) {
     uploader->UploadFile(reflog_db, ".cvmfsreflog");
     manifest::Reflog::HashDatabase(reflog_db, &reflog_hash);
     uploader->WaitForUpload();
-    manifest::Reflog::WriteChecksum(reflog_chksum_path, reflog_hash);
+    if (uploader->GetNumberOfErrors() > 0) {
+      LogCvmfs(kLogCvmfs, kLogStderr, "failed to upload updated Reflog");
+      reflog_ok = false;
+    } else {
+      reflog_ok = manifest::Reflog::WriteChecksum(reflog_chksum_path,
+                                                  reflog_hash);
+    }
   }
 
   unlink(reflog_db.c_str());
 
-  if (uploader->GetNumberOfErrors() > 0 && !dry_run) {
-    LogCvmfs(kLogCvmfs, kLogStderr, "failed to upload updated Reflog");
-
+  if (!reflog_ok) {
     stats_db->StoreGCStatistics(this->statistics(), start_time, false);
     if (upload_statsdb) {
       stats_db->UploadStatistics(uploader.get());

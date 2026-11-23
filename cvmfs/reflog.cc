@@ -4,11 +4,15 @@
 
 #include "reflog.h"
 
+#include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cassert>
+#include <cstring>
 
+#include "util/platform.h"
 #include "util/posix.h"
 #include "util/string.h"
 
@@ -62,19 +66,56 @@ bool Reflog::ReadChecksum(const std::string &path, shash::Any *checksum) {
 }
 
 
+/**
+ * Replaces the checksum file atomically. Truncating in place would leave an
+ * empty file behind if the file system is full (ENOSPC on write), which breaks
+ * the next publish or snapshot.
+ */
 bool Reflog::WriteChecksum(const std::string &path, const shash::Any &value) {
-  const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
-                      kDefaultFileMode);
+  const std::string hex_hash = value.ToString();
+  std::string tmp_path = path + ".XXXXXX";
+  const char *step = NULL;
+  const int fd = mkstemp(&tmp_path[0]);
   if (fd < 0) {
+    step = "create";
+  } else {
+    // Keep the mode and owner of an existing file: other tools (e.g. running
+    // as the repository owner) may need to rewrite it.
+    int mode = kDefaultFileMode;
+    platform_stat64 info;
+    const bool has_old = (platform_stat(path.c_str(), &info) == 0);
+    if (has_old)
+      mode = info.st_mode & 0777;
+
+    if (fchmod(fd, mode) != 0) {
+      step = "chmod";
+    } else if (has_old && (geteuid() == 0)
+               && (fchown(fd, info.st_uid, info.st_gid) != 0)) {
+      step = "chown";
+    } else if (!SafeWrite(fd, hex_hash.data(), hex_hash.length())) {
+      step = "write";
+    } else if (fsync(fd) != 0) {
+      step = "fsync";
+    }
+    const int saved_errno = errno;
+    if ((close(fd) != 0) && (step == NULL))
+      step = "close";
+    else
+      errno = saved_errno;
+    if ((step == NULL) && (rename(tmp_path.c_str(), path.c_str()) != 0))
+      step = "rename";
+  }
+
+  if (step != NULL) {
+    const int saved_errno = errno;
+    if (fd >= 0)
+      unlink(tmp_path.c_str());
+    LogCvmfs(kLogReflog, kLogStderr,
+             "failed to write reflog checksum %s (%s: %d - %s); once fixed, "
+             "run `cvmfs_server check -r` to resync it",
+             path.c_str(), step, saved_errno, strerror(saved_errno));
     return false;
   }
-  std::string hex_hash = value.ToString();
-  const bool retval = SafeWrite(fd, hex_hash.data(), hex_hash.length());
-  if (retval == 0) {
-    close(fd);
-    return false;
-  }
-  close(fd);
   return true;
 }
 
