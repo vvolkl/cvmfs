@@ -1542,6 +1542,8 @@ _cvmfs_reload_pause() {
     debug_flag="--debug"
   fi
 
+  rm -f "${CVMFS_RELOAD_SOCKETS}/cvmfs.${fqrn}.paused.crashed"
+  reload_paused_fqrns="$reload_paused_fqrns $fqrn"
   echo "Pausing ${fqrn} on ${mountpoint}"
   cd "$mountpoint" &&
     rm -f ${CVMFS_RELOAD_SOCKETS}/cvmfs.pause/$(echo -n "$mountpoint" | base64_nowrap) && \
@@ -1638,6 +1640,7 @@ cvmfs_reload() {
   local mount_list
   local config_mnt=""
   mount_list=`list_mounts | awk '{print $3}'`
+  reload_paused_fqrns=
   if [ "x$CVMFS_CONFIG_REPOSITORY" != "x" ]; then
     config_mnt=$(canonicalize_path ${CVMFS_MOUNT_DIR}/${CVMFS_CONFIG_REPOSITORY})
     # The config repo may not be mounted yet, and reading any repository's
@@ -1725,6 +1728,15 @@ cvmfs_reload() {
     done
   fi
   wait
+
+  # A module that fails to load after SIGUSR1 leaves this marker behind
+  local f
+  for f in $reload_paused_fqrns; do
+    if [ -f "${CVMFS_RELOAD_SOCKETS}/cvmfs.${f}.paused.crashed" ]; then
+      echo "RELOADING FAILED for ${f}, remount it" 1>&2
+      RETVAL=1
+    fi
+  done
 
   return $RETVAL
 }
