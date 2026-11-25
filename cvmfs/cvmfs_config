@@ -1515,6 +1515,48 @@ _cvmfs_is_libfuse2_pid() {
   grep -qE 'libcvmfs_fuse(_debug)?\.so' "/proc/$pid/maps" 2>/dev/null
 }
 
+_cvmfs_mount_owner() {
+  get_attr pid "$1"
+  [ -n "$attr_value" ] && ps -o user= -p "$attr_value" 2>/dev/null | tr -d ' '
+}
+
+_cvmfs_reload_mount_owners() {
+  local m
+  for m in $(list_mounts | awk '{print $3}'); do
+    _cvmfs_mount_owner "$m"
+  done | sort -u
+}
+
+# Sets reload_mounts to the mounts this invocation can reload and
+# reload_skipped to the number of mounts it refused.  On macOS, mounts belong
+# to the mounting user, whose socket directory is CVMFS_RELOAD_SOCKETS; other
+# users' mounts are left alone.
+_cvmfs_reload_select_mounts() {
+  local quiet="$1"
+  local m pid
+  reload_mounts=
+  reload_skipped=0
+  for m in $(list_mounts | awk '{print $3}'); do
+    if [ "$sys_arch" != "Darwin" ]; then
+      reload_mounts="$reload_mounts $m"
+      continue
+    fi
+    get_attr pid "$m"; pid=$attr_value
+    [ -n "$pid" ] || continue
+    [ x"$(ps -o user= -p "$pid" 2>/dev/null | tr -d ' ')" = x"$CVMFS_USER" ] \
+      || continue
+    # A sudo mount keeps root as real uid, so only root can signal it.  Check
+    # before pausing, a repository that cannot be resumed stays paused.
+    if ! kill -0 "$pid" 2>/dev/null; then
+      [ -n "$quiet" ] || echo "WARNING: $m was mounted with sudo," \
+        "use 'sudo cvmfs_config reload'" 1>&2
+      reload_skipped=$((reload_skipped + 1))
+      continue
+    fi
+    reload_mounts="$reload_mounts $m"
+  done
+}
+
 _cvmfs_reload_pause() {
   # Helper function to put a particular repository in sleep mode
   local mountpoint="$1"
@@ -1572,7 +1614,9 @@ cvmfs_reload() {
   # Run the reload command with clean environment to remove potential cvmfs
   # dependencies
   if [ "x$__CVMFS_CLEAN_ENV__" = "x" ]; then
-    exec env -i __CVMFS_CLEAN_ENV__=1 $(get_minimal_path) $0 reload $@
+    # On macOS, 10-osx.conf takes the mounting user from SUDO_USER
+    exec env -i __CVMFS_CLEAN_ENV__=1 ${SUDO_USER:+SUDO_USER=$SUDO_USER} \
+      $(get_minimal_path) $0 reload $@
   fi
 
   cvmfs_readconfig || die "Failed to read CernVM-FS configuration"
@@ -1605,15 +1649,26 @@ cvmfs_reload() {
   fi
 
   # Organized reload of all repositories
+  local owner_retval=0
+  if [ "$sys_arch" = "Darwin" ] && [ "$CVMFS_USER" = "root" ]; then
+    # Each user's mounts have their own socket directory: reload them as that
+    # user.  Root-owned mounts are handled below.
+    local owner
+    for owner in $(_cvmfs_reload_mount_owners | grep -vx root); do
+      env -i __CVMFS_CLEAN_ENV__=1 SUDO_USER=$owner $(get_minimal_path) \
+        $0 reload $([ $clean_cache -eq 1 ] && echo -c) || owner_retval=1
+    done
+  fi
+
   if [ ! -d "$CVMFS_RELOAD_SOCKETS" ]; then
     local mount_list
-    mount_list=`list_mounts | awk '{print $3}'`
+    _cvmfs_reload_select_mounts quiet; mount_list=$reload_mounts
     if [ x"$mount_list" != "x" ]; then
       echo "$CVMFS_RELOAD_SOCKETS is not a directory.  No hotpatch performed."
       echo "Nevertheless, there are mounted cvmfs repositories."
       return 1
     fi
-    return 0
+    return $owner_retval
   fi
 
   if [ "x$CVMFS_CONFIG_REPOSITORY" != "x" ]; then
@@ -1636,16 +1691,26 @@ cvmfs_reload() {
   fi
   trap "rm -f $CVMFS_RELOAD_SOCKETS/cvmfs.pause/*; rmdir $CVMFS_RELOAD_SOCKETS/cvmfs.pause" EXIT
 
-  RETVAL=0
+  RETVAL=$owner_retval
   local mount_list
   local config_mnt=""
-  mount_list=`list_mounts | awk '{print $3}'`
+  _cvmfs_reload_select_mounts; mount_list=$reload_mounts
+  [ $reload_skipped -eq 0 ] || RETVAL=1
   reload_paused_fqrns=
   if [ "x$CVMFS_CONFIG_REPOSITORY" != "x" ]; then
     config_mnt=$(canonicalize_path ${CVMFS_MOUNT_DIR}/${CVMFS_CONFIG_REPOSITORY})
-    # The config repo may not be mounted yet, and reading any repository's
-    # configuration below can automount it.
-    mount_list="$mount_list $config_mnt"
+    if [ "$sys_arch" = "Darwin" ]; then
+      # No automounter; a config repo of another user is not ours to pause
+      local m in_list=0
+      for m in $mount_list; do
+        [ x"$(canonicalize_path "$m")" = x"$config_mnt" ] && in_list=1
+      done
+      [ $in_list -eq 1 ] || config_mnt=""
+    else
+      # The config repo may not be mounted yet, and reading any repository's
+      # configuration below can automount it.
+      mount_list="$mount_list $config_mnt"
+    fi
   fi
   # Make sure that if autofs unmounts any of these guys, they (but only they)
   # can be remounted
@@ -1681,7 +1746,7 @@ cvmfs_reload() {
     done
   fi
 
-  if [ "x${CVMFS_CONFIG_REPOSITORY}" != "x" ]; then
+  if [ -n "$config_mnt" ]; then
     # If we have a config repository, now is the time to pause it at the very end
     _cvmfs_reload_pause "${CVMFS_MOUNT_DIR}/${CVMFS_CONFIG_REPOSITORY}" &&
       _cvmfs_reload_waitfor "${CVMFS_RELOAD_SOCKETS}/cvmfs.${CVMFS_CONFIG_REPOSITORY}.paused"
