@@ -1533,9 +1533,12 @@ _cvmfs_reload_mount_owners() {
 # users' mounts are left alone.
 _cvmfs_reload_select_mounts() {
   local quiet="$1"
-  local m pid
+  local m pid running installed=""
   reload_mounts=
   reload_skipped=0
+  if [ "$sys_arch" = "Darwin" ]; then
+    installed=$(cvmfs2 --version 2>/dev/null | awk '{print $NF}')
+  fi
   for m in $(list_mounts | awk '{print $3}'); do
     if [ "$sys_arch" != "Darwin" ]; then
       reload_mounts="$reload_mounts $m"
@@ -1550,6 +1553,17 @@ _cvmfs_reload_select_mounts() {
     if ! kill -0 "$pid" 2>/dev/null; then
       [ -n "$quiet" ] || echo "WARNING: $m was mounted with sudo," \
         "use 'sudo cvmfs_config reload'" 1>&2
+      reload_skipped=$((reload_skipped + 1))
+      continue
+    fi
+    # Pre-releases share the library names of their release (2.15.0), so the
+    # new module would resolve against the old, still loaded libcvmfs_util
+    get_attr version "$m"; running=${attr_value%.*}
+    if [ -n "$installed" ] && [ -n "$running" ] && \
+       [ "$running" != "$installed" ] && \
+       [ "${running%%~*}" = "${installed%%~*}" ]; then
+      [ -n "$quiet" ] || echo "WARNING: $m runs $running, installed is" \
+        "$installed; these cannot be hotpatched, remount instead" 1>&2
       reload_skipped=$((reload_skipped + 1))
       continue
     fi
