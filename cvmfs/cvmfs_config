@@ -2140,10 +2140,15 @@ list_mounts() {
     local mount_root
     mount_root=$(readlink "$mount_dir" 2>/dev/null)
     [ -n "$mount_root" ] || mount_root="$mount_dir"
+    # The mount helper mounts under /Volumes/cvmfs even if /cvmfs is still a
+    # legacy link elsewhere
     mount -t "nfs" | grep "^127\.0\.0\.1:/ on " \
-      | sed "s| on ${mount_root}/| on ${mount_dir}/|"
-    mount | grep "(macfuse,.*fskit" | grep " on ${mount_root}/" \
-      | sed "s| on ${mount_root}/| on ${mount_dir}/|"
+      | sed -e "s| on ${mount_root}/| on ${mount_dir}/|" \
+            -e "s| on /Volumes/cvmfs/| on ${mount_dir}/|"
+    mount | grep "(macfuse,.*fskit" \
+      | grep -e " on ${mount_root}/" -e " on /Volumes/cvmfs/" \
+      | sed -e "s| on ${mount_root}/| on ${mount_dir}/|" \
+            -e "s| on /Volumes/cvmfs/| on ${mount_dir}/|"
   fi
 }
 
@@ -2808,7 +2813,8 @@ canonicalize_path() {
       echo $(readlink -f "$path_name")
       ;;
     Darwin )
-      echo $(greadlink -f "$path_name")
+      # No greadlink on stock macOS; realpath exists since macOS 13
+      realpath "$path_name" 2>/dev/null || echo "$path_name"
       ;;
   esac
 }
